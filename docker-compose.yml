@@ -1,0 +1,62 @@
+# =====================================================
+# xhs-assistant 双服务编排：postgres + app（Next.js）+ worker（调度器）
+# app/worker 共享同一 PostgreSQL 数据库
+# =====================================================
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: xhs-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-asdfg456}"
+      POSTGRES_DB: xhs_crawer
+    ports:
+      - "127.0.0.1:5433:5432"   # 宿主 5433 映射容器 5432（避免与本机 PG 5432 冲突）
+    volumes:
+      # PG18 镜像数据卷挂载点为 /var/lib/postgresql（PGDATA 在 /18/docker 子目录）
+      - xhs-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d xhs_crawer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: xhs-app
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-asdfg456}@postgres:5432/xhs_crawer"
+      SECRET_KEY: "${SECRET_KEY:-dev-only-change-me}"
+      FERNET_KEY: "${FERNET_KEY:-}"
+      CURL_IMPERSONATE_BIN: "${CURL_IMPERSONATE_BIN:-}"
+    volumes:
+      - xhs-storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: xhs-worker
+    command: ["node", "--import", "tsx", "src/worker/index.ts"]
+    environment:
+      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-asdfg456}@postgres:5432/xhs_crawer"
+      SECRET_KEY: "${SECRET_KEY:-dev-only-change-me}"
+      FERNET_KEY: "${FERNET_KEY:-}"
+      SCHEDULER_INTERVAL_SECONDS: "${SCHEDULER_INTERVAL_SECONDS:-60}"
+      COOKIE_HEALTH_CHECK_HOURS: "${COOKIE_HEALTH_CHECK_HOURS:-2}"
+      CURL_IMPERSONATE_BIN: "${CURL_IMPERSONATE_BIN:-}"
+    volumes:
+      - xhs-storage:/app/storage
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - app
+
+volumes:
+  xhs-postgres-data:
+  xhs-storage:

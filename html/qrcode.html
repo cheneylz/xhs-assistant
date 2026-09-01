@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes" />
+    <title>二维码导航</title>
+    <style>
+        /* ===== 全局重置 & 基础 ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fb;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            width: 100%;
+            background: #ffffff;
+            border-radius: 28px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+            padding: 32px 28px 40px;
+            margin: 10px auto;
+            transition: all 0.2s;
+        }
+
+        /* ===== 头部 ===== */
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            font-size: 26px;
+            font-weight: 700;
+            color: #1a1a2e;
+            letter-spacing: 0.5px;
+        }
+
+        .header p {
+            margin-top: 8px;
+            color: #8888a0;
+            font-size: 15px;
+            letter-spacing: 0.3px;
+        }
+
+        .header .badge {
+            display: inline-block;
+            margin-top: 10px;
+            background: #eef2ff;
+            color: #4f46e5;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 4px 16px;
+            border-radius: 20px;
+        }
+
+        /* ===== 二维码网格 ===== */
+        .qr-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 24px 20px;
+            justify-items: center;
+        }
+
+        /* ===== 每个卡片 ===== */
+        .qr-card {
+            width: 100%;
+            max-width: 220px;
+            background: #fafbff;
+            border-radius: 20px;
+            padding: 18px 12px 16px;
+            text-align: center;
+            transition: transform 0.2s ease, box-shadow 0.25s ease;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+            border: 1.5px solid transparent;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+        }
+
+        .qr-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.07);
+            border-color: #e8ecf8;
+            background: #ffffff;
+        }
+
+        .qr-card:active {
+            transform: scale(0.96);
+            transition-duration: 0.06s;
+        }
+
+        /* ===== 二维码图片 ===== */
+        .qr-card img {
+            width: 100%;
+            max-width: 160px;
+            height: auto;
+            aspect-ratio: 1/1;
+            border-radius: 14px;
+            background: #ffffff;
+            display: block;
+            margin: 0 auto 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+            transition: box-shadow 0.2s;
+            image-rendering: pixelated;
+            /* 保持二维码清晰 */;
+        }
+
+        .qr-card:hover img {
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.07);
+        }
+
+        /* ===== 卡片文字 ===== */
+        .qr-card .label {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1a1a2e;
+            display: block;
+            margin-top: 2px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .qr-card .sub-label {
+            font-size: 12px;
+            color: #a0a0b8;
+            display: block;
+            margin-top: 2px;
+            font-weight: 400;
+            letter-spacing: 0.2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 90%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* ===== 底部提示 ===== */
+        .footer-tip {
+            margin-top: 36px;
+            text-align: center;
+            font-size: 13px;
+            color: #b0b0c8;
+            border-top: 1px solid #f0f2f8;
+            padding-top: 24px;
+            letter-spacing: 0.3px;
+        }
+
+        .footer-tip span {
+            display: inline-block;
+            background: #f5f6fc;
+            padding: 2px 14px;
+            border-radius: 30px;
+            color: #7a7a9a;
+        }
+
+        /* ===== 响应式 ===== */
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px 16px 28px;
+                border-radius: 20px;
+            }
+
+            .header h1 {
+                font-size: 22px;
+            }
+
+            .qr-grid {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                gap: 16px 12px;
+            }
+
+            .qr-card {
+                padding: 14px 8px 12px;
+                max-width: 100%;
+            }
+
+            .qr-card img {
+                max-width: 130px;
+            }
+
+            .qr-card .label {
+                font-size: 14px;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .qr-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px 8px;
+            }
+
+            .qr-card {
+                padding: 10px 6px 10px;
+                border-radius: 14px;
+            }
+
+            .qr-card img {
+                max-width: 100%;
+            }
+
+            .qr-card .label {
+                font-size: 12px;
+            }
+
+            .qr-card .sub-label {
+                font-size: 10px;
+            }
+        }
+
+        /* ===== 加载占位 ===== */
+        .qr-card img[src=""] {
+            opacity: 0;
+        }
+
+        /* ===== 轻触高亮 (移动端) ===== */
+        .qr-card {
+            -webkit-tap-highlight-color: rgba(79, 70, 229, 0.08);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+
+        <!-- ===== 头部 ===== -->
+        <div class="header">
+            <h1>📱 扫码导航</h1>
+            <p>点击下方任意二维码，直达对应页面</p>
+            <span class="badge">✦ 共 <span id="countDisplay">0</span> 个入口</span>
+        </div>
+
+        <!-- ===== 二维码网格 ===== -->
+        <div class="qr-grid" id="qrGrid">
+            <!-- 由 JavaScript 动态渲染 -->
+        </div>
+
+        <!-- ===== 底部 ===== -->
+        <div class="footer-tip">
+            <span>👆 点击图片直接跳转</span>
+        </div>
+
+    </div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            // ============================================================
+            //  🔧 配置区 —— 在这里修改你的二维码数据
+            //  每项：{ label: 显示名称, url: 跳转链接, sub?: 可选备注 }
+            // ============================================================
+            const QR_CONFIG = [{
+                label: '百度',
+                url: 'https://www.baidu.com',
+                sub: '搜索引擎'
+            }, {
+                label: '知乎',
+                url: 'https://www.zhihu.com',
+                sub: '知识社区'
+            }, {
+                label: 'GitHub',
+                url: 'https://github.com',
+                sub: '代码托管'
+            }, {
+                label: 'B站',
+                url: 'https://www.bilibili.com',
+                sub: '视频弹幕'
+            }, {
+                label: '豆瓣',
+                url: 'https://www.douban.com',
+                sub: '电影·读书'
+            }, {
+                label: '微博',
+                url: 'https://www.weibo.com',
+                sub: '社交平台'
+            }];
+            // ============================================================
+
+            // 二维码生成 API（使用 qrserver 免费服务）
+            const QR_API_BASE = 'https://api.qrserver.com/v1/create-qr-code/';
+            const QR_SIZE = 200; // 图片尺寸 (px)
+            const QR_MARGIN = 12;
+
+            const grid = document.getElementById('qrGrid');
+            const countDisplay = document.getElementById('countDisplay');
+
+            // 更新数量徽章
+            countDisplay.textContent = QR_CONFIG.length;
+
+            // 如果没有数据，显示提示
+            if (!QR_CONFIG || QR_CONFIG.length === 0) {
+                grid.innerHTML = `
+                    <div style="grid-column:1/-1; text-align:center; padding:40px 0; color:#b0b0c8; font-size:15px;">
+                        ⚠️ 暂无二维码配置，请添加数据
+                    </div>
+                `;
+                return;
+            }
+
+            // 构建每个卡片
+            let html = '';
+            QR_CONFIG.forEach((item, index) => {
+                const { label, url, sub } = item;
+
+                // 对 URL 进行编码，作为二维码数据
+                const encodedData = encodeURIComponent(url);
+                const qrSrc =
+                    `${QR_API_BASE}?size=${QR_SIZE}x${QR_SIZE}&margin=${QR_MARGIN}&data=${encodedData}&format=png`;
+
+                // 转义 label 防止 XSS（但内部文本安全）
+                const safeLabel = escapeHtml(label);
+                const safeSub = sub ? escapeHtml(sub) : '';
+                const displaySub = safeSub ? `<span class="sub-label">${safeSub}</span>` : '';
+
+                html += `
+                    <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="qr-card" data-index="${index}">
+                        <img src="${qrSrc}" alt="${safeLabel} 二维码" loading="lazy" width="${QR_SIZE}" height="${QR_SIZE}" />
+                        <span class="label">${safeLabel}</span>
+                        ${displaySub}
+                    </a>
+                `;
+            });
+
+            grid.innerHTML = html;
+
+            // ===== 工具函数 =====
+            function escapeHtml(str) {
+                if (!str) return '';
+                const div = document.createElement('div');
+                div.textContent = str;
+                return div.innerHTML;
+            }
+
+            // ===== 可选：统计点击（仅控制台调试用） =====
+            document.addEventListener('click', function(e) {
+                const card = e.target.closest('.qr-card');
+                if (card) {
+                    const label = card.querySelector('.label')?.textContent || '未知';
+                    console.log(`📤 点击导航: ${label} → ${card.getAttribute('href')}`);
+                }
+            });
+
+        })();
+    </script>
+
+</body>
+</html>

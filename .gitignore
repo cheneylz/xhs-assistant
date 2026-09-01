@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js 构建产物
+.next/
+out/
+build/
+
+# 环境变量（密钥一律由 .env 管理，不入库）
+.env
+.env.local
+.env.*.local
+
+# 数据库与存储
+prisma/data/
+data/
+storage/
+*.db
+*.db-journal
+
+# 测试与覆盖率
+coverage/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*

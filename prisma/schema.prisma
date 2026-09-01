@@ -1,0 +1,631 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- 用户 ----------
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  role         String   @default("user") // 角色：admin/user 两级（AI Agent 平台 S-01）
+  createdAt    DateTime @map("created_at")
+
+  @@map("users")
+}
+
+// ---------- 账号知识库（AI Agent 平台 S-02）----------
+model KnowledgeBase {
+  id                Int      @id @default(autoincrement())
+  userId            Int      @map("user_id")
+  platformAccountId Int?     @map("platform_account_id") // 为空表示全账号通用知识库
+  positioning       String   @default("") // 账号定位（一句话描述）
+  toneStyle         String   @map("tone_style") @default("") // 口吻风格：亲切/专业/幽默/温暖
+  credibleClaims    Json     @map("credible_claims") @default("[]") // 可信主张（JSON 数组）
+  contentBoundary   String   @map("content_boundary") @default("") // 内容边界
+  visualIdentity    Json     @map("visual_identity") @default("{}") // 视觉身份（品牌色/字体/封面风格）
+  lessonsLearned    Json     @map("lessons_learned") @default("[]") // 闭环学习结论（A-06 写回）
+  updatedAt         DateTime @map("updated_at")
+
+  fewShotNotes FewShotNote[]
+
+  @@index([userId])
+  @@map("knowledge_bases")
+}
+
+// 历史优质笔记（Few-shot 样本，C-07 风格模仿）
+model FewShotNote {
+  id              Int      @id @default(autoincrement())
+  knowledgeBaseId Int      @map("knowledge_base_id")
+  noteId          Int?     @map("note_id") // 关联 notes 表（可选）
+  title           String   @default("")
+  body            String   @default("")
+  styleAnalysis   String   @map("style_analysis") @default("") // LLM 风格拆解：句式/用词/情绪基调
+  sortOrder       Int      @map("sort_order") @default(0)
+  createdAt       DateTime @map("created_at")
+
+  knowledgeBase KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+
+  @@index([knowledgeBaseId])
+  @@map("few_shot_notes")
+}
+
+// ---------- 平台账号（PC / creator 双账号体系）----------
+model PlatformAccount {
+  id             Int     @id @default(autoincrement())
+  userId         Int     @map("user_id")
+  platform       String
+  subType        String? @map("sub_type")
+  externalUserId String? @map("external_user_id")
+  nickname       String  @default("")
+  avatarUrl      String  @map("avatar_url") @default("")
+  status         String  @default("unknown")
+  statusMessage  String  @map("status_message") @default("")
+  profileJson    String  @map("profile_json") @default("{}")
+  createdAt      DateTime @map("created_at")
+  updatedAt      DateTime @map("updated_at")
+
+  cookieVersions AccountCookieVersion[]
+  publishJobs    PublishJob[]
+
+  @@index([userId])
+  @@index([platform])
+  @@map("platform_accounts")
+}
+
+model AccountCookieVersion {
+  id                Int    @id @default(autoincrement())
+  platformAccountId Int    @map("platform_account_id")
+  encryptedCookies  String @map("encrypted_cookies")
+  createdAt         DateTime @map("created_at")
+
+  platformAccount PlatformAccount @relation(fields: [platformAccountId], references: [id])
+
+  @@index([platformAccountId])
+  @@map("account_cookie_versions")
+}
+
+// ---------- 登录会话（QR / 短信）----------
+model LoginSession {
+  id                    Int     @id @default(autoincrement())
+  userId                Int     @map("user_id")
+  platform              String
+  subType               String? @map("sub_type")
+  status                String  @default("pending")
+  loginMethod           String  @map("login_method") @default("qr")
+  phoneMask             String? @map("phone_mask")
+  qrId                  String? @map("qr_id")
+  code                  String?
+  qrUrl                 String? @map("qr_url")
+  encryptedTempCookies  String? @map("encrypted_temp_cookies")
+  createdAt             DateTime @map("created_at")
+
+  @@index([userId])
+  @@index([platform])
+  @@map("login_sessions")
+}
+
+// ---------- 笔记 ----------
+model Note {
+  id                Int      @id @default(autoincrement())
+  userId            Int      @map("user_id") @default(0)
+  platformAccountId Int      @map("platform_account_id")
+  platform          String
+  noteId            String   @map("note_id")
+  title             String   @default("")
+  content           String   @default("")
+  authorName        String   @map("author_name") @default("")
+  rawJson           Json?    @map("raw_json")
+  createdAt         DateTime @map("created_at")
+
+  assets   NoteAsset[]
+  comments NoteComment[]
+  noteTags NoteTags[] @relation("NoteTags")
+  @@index([platformAccountId])
+  @@index([platform])
+  @@index([noteId])
+  @@map("notes")
+}
+
+model NoteAsset {
+  id        Int    @id @default(autoincrement())
+  noteId    Int    @map("note_id")
+  assetType String @map("asset_type")
+  url       String
+  localPath String @map("local_path") @default("")
+  sortOrder Int    @map("sort_order") @default(0)
+
+  note Note @relation(fields: [noteId], references: [id])
+
+  @@index([noteId])
+  @@map("note_assets")
+}
+
+model NoteComment {
+  id               Int     @id @default(autoincrement())
+  noteId           Int     @map("note_id")
+  commentId        String  @map("comment_id")
+  userName         String  @map("user_name") @default("")
+  userId           String? @map("user_id")
+  content          String  @default("")
+  likeCount        Int     @map("like_count") @default(0)
+  parentCommentId  String? @map("parent_comment_id")
+  createdAtRemote  String? @map("created_at_remote")
+  rawJson          Json?   @map("raw_json")
+
+  note Note @relation(fields: [noteId], references: [id])
+
+  @@index([noteId])
+  @@index([commentId])
+  @@map("note_comments")
+}
+
+model Tag {
+  id       Int        @id @default(autoincrement())
+  userId   Int        @map("user_id")
+  name     String
+  color    String     @default("#111111")
+  noteTags NoteTags[]
+
+  @@index([userId])
+  @@map("tags")
+}
+
+model NoteTags {
+  noteId Int @map("note_id")
+  tagId  Int @map("tag_id")
+  note   Note @relation("NoteTags", fields: [noteId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id])
+
+  @@id([noteId, tagId])
+  @@map("note_tags")
+}
+
+// ---------- 模型配置 / AI 草稿 ----------
+model ModelConfig {
+  id              Int    @id @default(autoincrement())
+  userId          Int    @map("user_id")
+  name            String
+  modelType       String @map("model_type")
+  provider        String
+  modelName       String @map("model_name") @default("")
+  baseUrl         String @map("base_url") @default("")
+  encryptedApiKey String @map("encrypted_api_key") @default("")
+  isDefault       Boolean @map("is_default") @default(false)
+
+  @@index([userId])
+  @@index([modelType])
+  @@map("model_configs")
+}
+
+model AiDraft {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  platform      String
+  title         String   @default("")
+  body          String   @default("")
+  tags          Json?
+  sourceNoteId  Int?     @map("source_note_id")
+  createdAt     DateTime @map("created_at")
+
+  assets         DraftAsset[]
+  generatedAssets AiGeneratedAsset[]
+  publishJobs    PublishJob[]
+
+  @@index([userId])
+  @@index([platform])
+  @@map("ai_drafts")
+}
+
+model DraftAsset {
+  id        Int    @id @default(autoincrement())
+  draftId   Int    @map("draft_id")
+  assetType String @map("asset_type")
+  url       String @default("")
+  localPath String @map("local_path") @default("")
+  sortOrder Int    @map("sort_order") @default(0)
+
+  draft AiDraft @relation(fields: [draftId], references: [id])
+
+  @@index([draftId])
+  @@map("draft_assets")
+}
+
+model AiGeneratedAsset {
+  id        Int     @id @default(autoincrement())
+  userId    Int     @map("user_id")
+  draftId   Int?    @map("draft_id")
+  prompt    String  @default("")
+  modelName String  @map("model_name") @default("")
+  params    Json?
+  filePath  String  @map("file_path") @default("")
+  createdAt DateTime @map("created_at")
+
+  draft AiDraft? @relation(fields: [draftId], references: [id])
+
+  @@index([userId])
+  @@map("ai_generated_assets")
+}
+
+// ---------- 发布 ----------
+model PublishJob {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  platformAccountId Int?      @map("platform_account_id")
+  sourceDraftId     Int?      @map("source_draft_id")
+  platform          String
+  title             String    @default("")
+  body              String    @default("")
+  publishMode       String    @map("publish_mode") @default("immediate")
+  publishOptions    String    @map("publish_options") @default("{}")
+  status            String    @default("pending")
+  gateStatus        String    @map("gate_status") @default("pending") // 三道门禁：pending/passed/warning/blocked
+  scheduledAt       DateTime? @map("scheduled_at")
+  externalNoteId    String    @map("external_note_id") @default("")
+  publishError      String    @map("publish_error") @default("")
+  publishedAt       DateTime? @map("published_at")
+  createdAt         DateTime  @map("created_at")
+
+  account PlatformAccount? @relation(fields: [platformAccountId], references: [id])
+  draft   AiDraft?         @relation(fields: [sourceDraftId], references: [id])
+  assets  PublishAsset[]
+
+  @@index([userId])
+  @@index([platformAccountId])
+  @@index([platform])
+  @@map("publish_jobs")
+}
+
+model PublishAsset {
+  id                Int    @id @default(autoincrement())
+  publishJobId      Int    @map("publish_job_id")
+  assetType         String @map("asset_type")
+  filePath          String @map("file_path")
+  uploadStatus      String @map("upload_status") @default("pending")
+  creatorMediaId    String @map("creator_media_id") @default("")
+  uploadError       String @map("upload_error") @default("")
+  creatorUploadInfo String @map("creator_upload_info") @default("{}")
+
+  publishJob PublishJob @relation(fields: [publishJobId], references: [id])
+
+  @@index([publishJobId])
+  @@map("publish_assets")
+}
+
+// ---------- 审校（AI Agent 平台 R-01~R-06）----------
+// 审校任务：一条待审内容 = 一个任务（双层检测 + 三道门禁共用）
+model ReviewJob {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  sourceDraftId Int?     @map("source_draft_id") // 关联 ai_drafts
+  sourceNoteId  Int?     @map("source_note_id") // 关联 notes（可选）
+  title         String   @default("")
+  body          String   @default("")
+  status        String   @default("pending") // pending/passed/warning/rejected/fixed
+  gateStatus    String   @map("gate_status") @default("pending") // pending/passed/warning/blocked（三道门禁结果）
+  riskCount     Int      @map("risk_count") @default(0)
+  createdAt     DateTime @map("created_at")
+  updatedAt     DateTime @map("updated_at")
+
+  findings ReviewFinding[]
+
+  @@index([userId])
+  @@map("review_jobs")
+}
+
+// 审校发现的风险点
+model ReviewFinding {
+  id          Int     @id @default(autoincrement())
+  reviewJobId Int     @map("review_job_id")
+  gate        String  @default("compliance") // 门禁来源：claim/originality/compliance/rule
+  riskType    String  @map("risk_type") // absolute_claim/medical_claim/fake_data/sensitive_word/inducement/copyright/duplicate/other
+  riskLevel   String  @map("risk_level") @default("warning") // warning/error
+  snippet     String  @default("") // 命中的原文片段
+  suggestion  String  @default("") // 修复建议
+  fixed       Boolean @default(false)
+  fixAction   String  @map("fix_action") @default("") // 梯度动作：disclose/evidence/narrow/rewrite/remove
+  fixedText   String  @map("fixed_text") @default("") // 修复后文本
+
+  reviewJob ReviewJob @relation(fields: [reviewJobId], references: [id], onDelete: Cascade)
+
+  @@index([reviewJobId])
+  @@map("review_findings")
+}
+
+// 合规规则库（R-02 规则层，可后台配置）
+model ComplianceRule {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  ruleType  String   @map("rule_type") // sensitive_word/absolute_claim/medical_claim/inducement/fake_data_pattern
+  pattern   String   @default("") // 关键词或正则
+  isRegex   Boolean  @map("is_regex") @default(false)
+  riskLevel String   @map("risk_level") @default("warning") // warning/error
+  enabled   Boolean  @default(true)
+  createdAt DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("compliance_rules")
+}
+
+// ---------- 热点洞察（AI Agent 平台 P-01/P-02/P-03）----------
+// 全站热点快照（每 30 分钟一批）
+model HotTopic {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  keyword       String   @default("")
+  category      String   @default("") // 分类：美妆/穿搭/美食/旅行/家居/知识 等
+  heatScore     Int      @map("heat_score") @default(0) // 热度分 = 搜索量×0.3 + 笔记增量×0.3 + 互动增量×0.4
+  searchCount   Int      @map("search_count") @default(0) // 搜索结果数（近似搜索量，绝对值）
+  engagement    Int      @default(0) // 本批 TOP5 互动总量（绝对值，用于跨批增量计算）
+  noteDelta     Int      @map("note_delta") @default(0) // 笔记增量（相对上一批次）
+  interactDelta Int      @map("interact_delta") @default(0) // 互动增量
+  riseSpeed     Int      @map("rise_speed") @default(0) // 环比上升百分比
+  rank          Int      @default(0) // 榜单名次（TOP50）
+  snapAt        DateTime @map("snap_at") // 批次时间
+
+  @@index([userId, snapAt])
+  @@index([userId, keyword])
+  @@map("hot_topics")
+}
+
+// 爆款拆解报告（P-02）
+model ExplosionReport {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  keyword        String   @default("")
+  rangeDays      Int      @map("range_days") @default(7)
+  titlePatterns  Json     @map("title_patterns") // 标题公式
+  coverPatterns  Json     @map("cover_patterns") // 封面要素
+  bodyPatterns   Json     @map("body_patterns") // 正文框架
+  engagePatterns Json     @map("engage_patterns") // 互动引导
+  sampleNotes    Json     @map("sample_notes") // 分析样本
+  createdAt      DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("explosion_reports")
+}
+
+// 选题（P-03）
+model TopicSuggestion {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  title         String   @default("")
+  direction     String   @default("") // 内容方向
+  predictedHeat Int      @map("predicted_heat") @default(0) // 预估热度
+  tags          Json? // 关联话题标签
+  source        String   @default("") // 生成依据：热点/爆款/知识库组合
+  status        String   @default("open") // open/accepted/expired
+  createdAt     DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("topic_suggestions")
+}
+
+// 智能排期推荐（D-01，每次生成一批）
+model ScheduleSuggestion {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  platformAccountId Int       @map("platform_account_id")
+  suggestedAt       DateTime? @map("suggested_at")
+  reason            String    @default("") // 推荐依据（时段统计/规则）
+  accepted          Boolean   @default(false)
+  createdAt         DateTime  @map("created_at")
+
+  @@index([userId])
+  @@index([platformAccountId])
+  @@map("schedule_suggestions")
+}
+
+// ---------- 评论自动响应（AI Agent 平台 D-05）----------
+model CommentReplyRule {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  intent        String   @default("question") // question/praise/complaint/ad/other
+  keywords      Json? // 触发关键词
+  replyTemplate String   @map("reply_template") @default("") // 回复模板（可含变量）
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("comment_reply_rules")
+}
+
+model CommentReply {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  noteId       Int      @map("note_id")
+  commentId    String   @map("comment_id")
+  noteUrl      String   @map("note_url") @default("") // 回复所需 xsec_token 等信息的来源 URL
+  intent       String   @default("other")
+  replyContent String   @map("reply_content") @default("")
+  status       String   @default("pending") // pending（待人工确认）/published/skipped/failed
+  replyError   String   @map("reply_error") @default("")
+  createdAt    DateTime @map("created_at")
+  repliedAt    DateTime? @map("replied_at")
+
+  @@index([userId])
+  @@index([status])
+  @@map("comment_replies")
+}
+
+// ---------- 技能库 / 工作流（AI Agent 平台 S-03/S-04）----------
+model SkillRegistry {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  skillKey     String   @map("skill_key")
+  name         String   @default("")
+  description  String   @default("")
+  paramsSchema Json     @map("params_schema") // JSON Schema
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("skill_registry")
+}
+
+model WorkflowDef {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String   @default("")
+  workflowKey String @map("workflow_key") @default("") // 预置工作流标识，如 standard_production
+  nodes     Json? // [{id, skillKey, params, next}]
+  enabled   Boolean  @default(true)
+  createdAt DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("workflow_defs")
+}
+
+// ---------- AI 用量（AI Agent 平台 S-06）----------
+model ApiUsageLog {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  modelConfigId    Int?     @map("model_config_id")
+  modelName        String   @map("model_name") @default("")
+  usageType        String   @map("usage_type") @default("text") // text/image/embedding
+  promptTokens     Int      @map("prompt_tokens") @default(0)
+  completionTokens Int      @map("completion_tokens") @default(0)
+  costCents        Int      @map("cost_cents") @default(0)
+  latencyMs        Int      @map("latency_ms") @default(0)
+  createdAt        DateTime @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("api_usage_logs")
+}
+
+// ---------- 任务（含自引用 parent_task_id）----------
+model Task {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  platform     String
+  taskType     String   @map("task_type")
+  status       String   @default("pending")
+  progress     Int      @default(0)
+  payload      Json?
+  createdAt    DateTime @map("created_at")
+  startedAt    DateTime? @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  errorType    String?  @map("error_type")
+  retryCount   Int      @map("retry_count") @default(0)
+  maxRetries   Int      @map("max_retries") @default(3)
+  parentTaskId Int?     @map("parent_task_id")
+
+  parent   Task?  @relation("TaskChildren", fields: [parentTaskId], references: [id])
+  children Task[] @relation("TaskChildren")
+
+  @@index([userId])
+  @@index([platform])
+  @@map("tasks")
+}
+
+// ---------- 自动运营 ----------
+model AutoTask {
+  id                    Int       @id @default(autoincrement())
+  userId                Int       @map("user_id")
+  name                  String
+  keywords              Json?
+  pcAccountId           Int       @map("pc_account_id")
+  creatorAccountId      Int       @map("creator_account_id")
+  aiInstruction         String    @map("ai_instruction") @default("")
+  scheduleType          String    @map("schedule_type") @default("manual")
+  scheduleTime          String    @map("schedule_time") @default("09:00")
+  scheduleDays          String    @map("schedule_days") @default("")
+  scheduleIntervalHours Int       @map("schedule_interval_hours") @default(24)
+  status                String    @default("active")
+  lastRunAt             DateTime? @map("last_run_at")
+  nextRunAt             DateTime? @map("next_run_at")
+  totalPublished        Int       @map("total_published") @default(0)
+  createdAt             DateTime  @map("created_at")
+
+  @@index([userId])
+  @@map("auto_tasks")
+}
+
+// ---------- 监控 ----------
+model MonitoringTarget {
+  id                   Int       @id @default(autoincrement())
+  userId               Int       @map("user_id")
+  platform             String    @default("xhs")
+  targetType           String    @map("target_type")
+  name                 String    @default("")
+  value                String
+  status               String    @default("active")
+  config               Json?
+  lastRefreshedAt      DateTime? @map("last_refreshed_at")
+  createdAt            DateTime  @map("created_at")
+  updatedAt            DateTime  @map("updated_at")
+  platformAccountId    Int?      @map("platform_account_id")
+  crawlIntervalMinutes Int       @map("crawl_interval_minutes") @default(60)
+  consecutiveFailures  Int       @map("consecutive_failures") @default(0)
+  lastCrawlError       String?   @map("last_crawl_error")
+
+  snapshots MonitoringSnapshot[]
+
+  @@index([userId])
+  @@index([platform])
+  @@index([targetType])
+  @@map("monitoring_targets")
+}
+
+model MonitoringSnapshot {
+  id        Int     @id @default(autoincrement())
+  targetId  Int     @map("target_id")
+  payload   Json?
+  createdAt DateTime @map("created_at")
+
+  target MonitoringTarget @relation(fields: [targetId], references: [id])
+
+  @@index([targetId])
+  @@map("monitoring_snapshots")
+}
+
+// ---------- 通知 ----------
+model Notification {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  title         String
+  body          String   @default("")
+  level         String   @default("info")
+  sourceTaskId  Int?     @map("source_task_id")
+  sourceType    String?  @map("source_type")
+  sourceId      Int?     @map("source_id")
+  read          Boolean  @default(false)
+  createdAt     DateTime @map("created_at")
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+// ---------- 关键词组 ----------
+model KeywordGroup {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  platform  String
+  name      String
+  keywords  Json?
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @map("updated_at")
+
+  @@index([userId])
+  @@index([platform])
+  @@map("keyword_groups")
+}
+
+// ---------- API 日志 ----------
+model ApiLog {
+  id        Int     @id @default(autoincrement())
+  userId    Int?    @map("user_id")
+  platform  String?
+  endpoint  String
+  status    String  @default("success")
+  meta      Json?
+  createdAt DateTime @map("created_at")
+
+  @@index([userId])
+  @@index([platform])
+  @@map("api_logs")
+}
