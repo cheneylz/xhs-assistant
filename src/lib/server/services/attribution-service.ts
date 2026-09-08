@@ -13,6 +13,7 @@ import { ownedNotes, noteMetrics, rawObject, rawTopics } from "../../../app/api/
 import type { TextClientLike } from "./review-service";
 import type { ModelConfigLike } from "./ai-service";
 import { makeUsageLogger } from "./usage-service";
+import { renderPrompt } from "../../../prompts/loader";
 
 // ---------- A-02 归因分析 ----------
 
@@ -40,10 +41,6 @@ export function parseAttribution(content: string): AttributionConclusion[] {
   }
   return result;
 }
-
-const ATTRIBUTION_SYSTEM_PROMPT = `你是小红书内容数据归因分析师。对比同账号高表现与低表现内容，找出关键成功/失败因素。
-输出 JSON：{"conclusions":[{"dimension":"标题|封面|发布时间|话题标签|正文|其他","finding":"归因结论","evidence":"数据证据"}]}
-要求：结论 3-6 条，具体可执行（如「标题带数字的点击率更高」），evidence 引用具体数据对比。`;
 
 /** 生成归因分析报告（高表现 TOP5 vs 低表现 TOP5） */
 export async function generateAttribution(options: {
@@ -76,7 +73,7 @@ export async function generateAttribution(options: {
   const content = await textClient.complete({
     modelConfig,
     apiKey,
-    systemPrompt: ATTRIBUTION_SYSTEM_PROMPT,
+    systemPrompt: renderPrompt("attribution.md", "attribution"),
     userPrompt: `【高表现内容 TOP5】\n${describe(topNotes)}\n\n【低表现内容 TOP5】\n${describe(lowNotes)}`,
     temperature: 0.3,
     onUsage: makeUsageLogger(userId, modelConfig.modelName), // S-06 用量采集
@@ -94,10 +91,6 @@ export async function generateAttribution(options: {
 }
 
 // ---------- A-04 运营周报 ----------
-
-const WEEKLY_REPORT_SYSTEM_PROMPT = `你是小红书运营周报撰写助手。根据运营数据汇总，写一份 200-300 字的运营周报叙述（markdown 格式）：
-结构：本周概览（数据）→ 亮点内容 → 存在问题 → 下周建议（2-3 条，具体可执行）。
-语气专业务实，不要空话。`;
 
 /** 生成运营周报（LLM 叙述 + 数据汇总） */
 export async function generateWeeklyReport(options: {
@@ -132,7 +125,7 @@ export async function generateWeeklyReport(options: {
     markdown = await textClient.complete({
       modelConfig,
       apiKey,
-      systemPrompt: WEEKLY_REPORT_SYSTEM_PROMPT,
+      systemPrompt: renderPrompt("attribution.md", "weekly-report"),
       userPrompt: `本周运营数据：\n${JSON.stringify(summary, null, 2)}`,
       temperature: 0.5,
       onUsage: makeUsageLogger(userId, modelConfig.modelName), // S-06 用量采集

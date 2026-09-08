@@ -8,6 +8,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../core/db";
 import { extractJsonObject } from "../core/json-extract";
 import { formatDateTime, shanghaiNow } from "../core/time";
+import { renderPrompt } from "../../../prompts/loader";
 import { buildKbContext } from "./knowledge-base-service";
 import { latestHotTopicBatch } from "./hot-topic-service";
 import type { TextClientLike } from "./review-service";
@@ -44,10 +45,6 @@ export function parseSuggestions(content: string, count: number): SuggestionItem
   return result;
 }
 
-const SUGGESTION_SYSTEM_PROMPT = `你是小红书选题策划专家，结合热点与账号定位输出可直接落地的选题。
-输出 JSON：{"items":[{"title":"选题标题","direction":"内容方向","predicted_heat":0到100整数,"tags":["话题标签"]}]}
-要求：标题具体可执行（不是泛泛的方向词），贴合账号定位，优先结合热点趋势。`;
-
 /** 生成选题并落库，返回本次生成结果 */
 export async function generateSuggestions(options: {
   userId: number;
@@ -64,7 +61,7 @@ export async function generateSuggestions(options: {
   const hot = await latestHotTopicBatch(userId);
   const hotText = hot.items
     .slice(0, 10)
-    .map((entry) => `${entry.rank}. ${entry.keyword}（热度 ${entry.heatScore}，上升 ${entry.riseSpeed}%）`)
+    .map((entry) => `${entry.rank}. ${entry.keyword}（热度 ${entry.heat_score}，上升 ${entry.rise_speed}%）`)
     .join("\n");
   const latestExplosion = await prisma.explosionReport.findFirst({
     where: { userId },
@@ -86,7 +83,7 @@ export async function generateSuggestions(options: {
   const content = await textClient.complete({
     modelConfig,
     apiKey,
-    systemPrompt: SUGGESTION_SYSTEM_PROMPT,
+    systemPrompt: renderPrompt("suggestion.md", "suggestion"),
     userPrompt: `请生成 ${count} 个小红书选题：\n${context || "（无额外上下文，按通用种草平台规律生成）"}`,
     temperature: 0.8,
     onUsage: makeUsageLogger(userId, modelConfig.modelName), // S-06 用量采集
@@ -135,6 +132,19 @@ export async function acceptSuggestion(userId: number, suggestionId: number): Pr
     data: { status: "accepted" },
   });
   return { suggestion: serializeTopicSuggestion(updated), draftId: draft.id };
+}
+
+/** 删除选题（仅限本人） */
+export async function deleteTopicSuggestion(userId: number, suggestionId: number): Promise<void> {
+  const suggestion = await prisma.topicSuggestion.findFirst({ where: { id: suggestionId, userId } });
+  if (!suggestion) throw new Error("选题不存在");
+  await prisma.topicSuggestion.delete({ where: { id: suggestionId } });
+}
+
+/** 批量删除选题（仅限本人，返回实际删除条数） */
+export async function deleteTopicSuggestions(userId: number, ids: number[]): Promise<number> {
+  const result = await prisma.topicSuggestion.deleteMany({ where: { id: { in: ids }, userId } });
+  return result.count;
 }
 
 export function serializeTopicSuggestion(suggestion: {

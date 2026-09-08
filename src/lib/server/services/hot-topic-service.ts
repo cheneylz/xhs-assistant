@@ -66,8 +66,21 @@ export interface HotTopicEntry {
   rank: number;
 }
 
+/** 榜单快照条目的序列化字段（下划线命名，与前端 HotTopicEntry 类型一致） */
+export interface HotTopicSnapshotEntry {
+  keyword: string;
+  category: string;
+  heat_score: number;
+  search_count: number;
+  engagement: number;
+  note_delta: number;
+  interact_delta: number;
+  rise_speed: number;
+  rank: number;
+}
+
 /** 查询用户最新一批快照（按批次时间倒序取最近一批） */
-export async function latestHotTopicBatch(userId: number, category?: string): Promise<{ snapAt: Date | null; items: HotTopicEntry[] }> {
+export async function latestHotTopicBatch(userId: number, category?: string): Promise<{ snapAt: Date | null; items: HotTopicSnapshotEntry[] }> {
   const latest = await prisma.hotTopic.findFirst({
     where: { userId },
     orderBy: { snapAt: "desc" },
@@ -81,15 +94,15 @@ export async function latestHotTopicBatch(userId: number, category?: string): Pr
   });
   return {
     snapAt: latest.snapAt,
-    items: rows.map((row) => ({
+    items: rows.map((row): HotTopicSnapshotEntry => ({
       keyword: row.keyword,
       category: row.category,
-      heatScore: row.heatScore,
-      searchCount: row.searchCount,
+      heat_score: row.heatScore,
+      search_count: row.searchCount,
       engagement: row.engagement,
-      noteDelta: row.noteDelta,
-      interactDelta: row.interactDelta,
-      riseSpeed: row.riseSpeed,
+      note_delta: row.noteDelta,
+      interact_delta: row.interactDelta,
+      rise_speed: row.riseSpeed,
       rank: row.rank,
     })),
   };

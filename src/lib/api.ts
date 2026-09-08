@@ -1074,6 +1074,16 @@ export async function fetchExplosionReports(): Promise<{ items: ExplosionReport[
   return response.data;
 }
 
+export async function deleteExplosionReport(reportId: number): Promise<{ id: number; status: string }> {
+  const response = await http.delete<{ id: number; status: string }>(`/xhs/analytics/explosions/${reportId}`);
+  return response.data;
+}
+
+export async function deleteExplosionReports(ids: number[]): Promise<{ deleted: number }> {
+  const response = await http.delete<{ deleted: number }>("/xhs/analytics/explosions", { data: { ids } });
+  return response.data;
+}
+
 // ---------- P-03 选题推荐 ----------
 
 export async function generateSuggestions(payload: { count?: number; direction?: string; platform_account_id?: number | null }): Promise<{ total: number; items: TopicSuggestion[] }> {
@@ -1088,6 +1098,16 @@ export async function fetchSuggestions(status?: string): Promise<{ items: TopicS
 
 export async function acceptSuggestion(suggestionId: number): Promise<{ suggestion: TopicSuggestion; draft_id: number }> {
   const response = await http.post<{ suggestion: TopicSuggestion; draft_id: number }>(`/xhs/analytics/suggestions/${suggestionId}/accept`);
+  return response.data;
+}
+
+export async function deleteSuggestion(suggestionId: number): Promise<{ id: number; status: string }> {
+  const response = await http.delete<{ id: number; status: string }>(`/xhs/analytics/suggestions/${suggestionId}`);
+  return response.data;
+}
+
+export async function deleteSuggestions(ids: number[]): Promise<{ deleted: number }> {
+  const response = await http.delete<{ deleted: number }>("/xhs/analytics/suggestions", { data: { ids } });
   return response.data;
 }
 
@@ -1176,6 +1196,24 @@ export async function fetchWorkflowRuns(): Promise<{ items: WorkflowRunRecord[] 
 
 export async function fetchSkills(): Promise<{ items: SkillItem[] }> {
   const response = await http.get<{ items: SkillItem[] }>("/skills");
+  return response.data;
+}
+
+export async function createSkill(payload: { skill_key: string; name: string; description?: string; instructions?: string }): Promise<SkillItem> {
+  const response = await http.post<SkillItem>("/skills", payload);
+  return response.data;
+}
+
+export async function updateSkill(
+  skillId: number,
+  payload: Partial<{ name: string; description: string; instructions: string; enabled: boolean }>,
+): Promise<SkillItem> {
+  const response = await http.patch<SkillItem>(`/skills/${skillId}`, payload);
+  return response.data;
+}
+
+export async function deleteSkill(skillId: number): Promise<{ id: number; status: string }> {
+  const response = await http.delete<{ id: number; status: string }>(`/skills/${skillId}`);
   return response.data;
 }
 

@@ -14,6 +14,7 @@ import { prisma } from "../core/db";
 import { formatDateTime, shanghaiNow } from "../core/time";
 import type { ModelConfigLike } from "./ai-service";
 import type { TextClientLike } from "./review-service";
+import { renderPrompt } from "../../../prompts/loader";
 
 // ---------- 知识库查询 ----------
 
@@ -123,9 +124,6 @@ export async function deleteFewShotNote(userId: number, fewShotNoteId: number) {
   await prisma.fewShotNote.delete({ where: { id: fewShotNoteId } });
 }
 
-const STYLE_ANALYSIS_PROMPT = `你是小红书内容风格分析师。分析给定笔记的语言风格、句式结构、用词偏好、情绪基调、常用开头与结尾方式。
-输出一段 150 字以内的分析文本（用于后续模仿生成），要点式输出，不要客套话。`;
-
 /** LLM 风格分析（C-07）：单篇笔记 → 结构化风格描述 */
 export async function analyzeNoteStyle(options: {
   title: string;
@@ -139,7 +137,7 @@ export async function analyzeNoteStyle(options: {
     const analysis = await textClient.complete({
       modelConfig,
       apiKey,
-      systemPrompt: STYLE_ANALYSIS_PROMPT,
+      systemPrompt: renderPrompt("knowledge-base.md", "style-analysis"),
       userPrompt: `标题：${title}\n\n正文：\n${body.slice(0, 2000)}`,
       temperature: 0.3,
     });

@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { getConfig } from "../core/config";
+import { renderPrompt } from "../../../prompts/loader";
 
 export interface ModelConfigLike {
   id: number;
@@ -217,17 +218,18 @@ export class OpenAICompatibleTextClient {
     return this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书内容运营编辑，负责在保留事实的前提下改写成自然、可发布的种草笔记。",
+      systemPrompt: renderPrompt("ai-notes.md", "rewrite-note"),
       userPrompt: `改写要求：${combined}\n\n标题：${options.title}\n\n正文：\n${options.body}`,
       onUsage: options.onUsage,
     });
   }
 
-  async generateNote(options: { modelConfig: ModelConfigLike; apiKey: string; topic: string; reference: string; instruction: string; onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void }): Promise<{ title: string; body: string }> {
+  async generateNote(options: { modelConfig: ModelConfigLike; apiKey: string; topic: string; reference: 
+    string; instruction: string; onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void }): Promise<{ title: string; body: string }> {
     const content = await this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书内容策划，输出可发布的标题和正文。",
+      systemPrompt: renderPrompt("ai-notes.md", "generate-note"),
       userPrompt: `请生成一篇小红书笔记，格式必须是：\n标题：...\n正文：...\n\n选题：${options.topic}\n参考材料：${options.reference || "无"}\n要求：${options.instruction || "自然、有信息密度"}`,
       onUsage: options.onUsage,
     });
@@ -264,10 +266,7 @@ export class OpenAICompatibleTextClient {
     const content = await this.complete({
       modelConfig,
       apiKey,
-      systemPrompt: `你是小红书内容策划专家，擅长写出自然、有信息密度、去AI味的种草笔记${styleLine}。
-输出必须为 JSON（不要输出任何其他内容），格式：
-{"titles":["标题1","标题2","标题3","标题4","标题5"],"body":"正文（300-800字，口语化，含个人真实体验）","tags":["话题标签1","话题标签2","话题标签3"],"cta":["行动引导1","行动引导2"]}
-要求：标题为 3-5 个不同风格的备选；tags 5-10 个；cta 1-2 条；正文避免「首先/其次/最后」等结构化连接词和模板化开头。`,
+      systemPrompt: renderPrompt("ai-notes.md", "note-pack", { styleLine }),
       userPrompt: `选题：${topic}${directionLine}\n参考材料：${reference || "无"}\n额外要求：${instruction || "自然、有信息密度"}${kbSection}`,
       temperature: 0.8,
       onUsage: options.onUsage,
@@ -286,12 +285,7 @@ export class OpenAICompatibleTextClient {
     return this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: `你是小红书短视频脚本策划，擅长把图文内容转化为口播分镜脚本。
-输出格式（markdown）：
-【开场钩子】（前 3 秒）
-【内容展开】分镜列表：镜头 / 画面描述 / 台词 / 时长
-【结尾引导】关注引导与互动引导
-台词要口语化，总时长 30-60 秒。`,
+      systemPrompt: renderPrompt("ai-notes.md", "video-script"),
       userPrompt: `标题：${options.title}\n\n文案：\n${options.body}`,
       temperature: 0.7,
       onUsage: options.onUsage,
@@ -302,7 +296,7 @@ export class OpenAICompatibleTextClient {
     const content = await this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书标题优化专家。",
+      systemPrompt: renderPrompt("ai-notes.md", "generate-titles"),
       userPrompt: `请给出 ${options.count} 个小红书标题，每行一个。\n原标题：${options.title}\n正文：${options.body}`,
       onUsage: options.onUsage,
     });
@@ -317,7 +311,7 @@ export class OpenAICompatibleTextClient {
     const content = await this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书 SEO 和话题标签专家。",
+      systemPrompt: renderPrompt("ai-notes.md", "generate-tags"),
       userPrompt: `请给出 ${options.count} 个小红书话题标签，只输出标签，用逗号或换行分隔。\n标题：${options.title}\n正文：${options.body}`,
       onUsage: options.onUsage,
     });
@@ -332,7 +326,7 @@ export class OpenAICompatibleTextClient {
     return this.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书正文润色编辑。",
+      systemPrompt: renderPrompt("ai-notes.md", "polish-text"),
       userPrompt: `润色要求：${options.instruction || "更自然、清晰、有种草感"}\n\n原文：\n${options.text}`,
       onUsage: options.onUsage,
     });
@@ -419,7 +413,7 @@ export class OpenAICompatibleImageClient {
       {
         model: modelConfig.modelName,
         messages: [
-          { role: "system", content: "你是小红书图片分析助手。" },
+          { role: "system", content: renderPrompt("ai-notes.md", "describe-image") },
           {
             role: "user",
             content: [

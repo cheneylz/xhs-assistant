@@ -760,7 +760,7 @@ export type ExplosionReport = {
   cover_patterns: string[];
   body_patterns: string[];
   engage_patterns: string[];
-  sample_notes: Array<{ title: string; author: string; likes: number; collects: number; comments: number; cover_url?: string }>;
+  sample_notes: Array<{ title: string; author: string; likes: number; collects: number; comments: number; cover_url?: string; note_url?: string }>;
   created_at: string;
 };
 
@@ -850,7 +850,9 @@ export type SkillItem = {
   skill_key: string;
   name: string;
   description: string;
+  instructions?: string;
   enabled: boolean;
+  created_at?: string;
 };
 
 // ---------- 用量监控（S-06）----------

@@ -453,6 +453,7 @@ model CommentReply {
 }
 
 // ---------- 技能库 / 工作流（AI Agent 平台 S-03/S-04）----------
+// 技能采用标准 Agent SKILL 格式：name/description 元数据 + instructions（Markdown 指令正文，可人工维护）
 model SkillRegistry {
   id           Int      @id @default(autoincrement())
   userId       Int      @map("user_id")
@@ -460,9 +461,11 @@ model SkillRegistry {
   name         String   @default("")
   description  String   @default("")
   paramsSchema Json     @map("params_schema") // JSON Schema
+  instructions String   @default("") @db.Text // SKILL.md 风格指令正文（Markdown）
   enabled      Boolean  @default(true)
   createdAt    DateTime @map("created_at")
 
+  @@unique([userId, skillKey])
   @@index([userId])
   @@map("skill_registry")
 }

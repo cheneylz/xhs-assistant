@@ -21,15 +21,20 @@ import { createReviewJob } from "./review-service";
 import { collectHotTopicsForUser } from "./hot-topic-service";
 import { buildKbContext } from "./knowledge-base-service";
 import { makeUsageLogger } from "./usage-service";
+import { extractJsonObject } from "../core/json-extract";
 import type { ModelConfigLike } from "./ai-service";
 
 // ---------- 技能目录（S-03 技能注册表种子数据）----------
+// 技能采用标准 Agent SKILL 格式：元数据（name/description）+ instructions（Markdown 指令正文），
+// 预置技能以代码映射执行，人工维护的 instructions 用于展示与 LLM 驱动执行。
 
 export interface SkillDefinition {
   skillKey: string;
   name: string;
   description: string;
   paramsSchema: Record<string, unknown>;
+  /** SKILL.md 风格指令正文（Markdown，含 frontmatter） */
+  instructions: string;
 }
 
 export const SKILL_CATALOG: SkillDefinition[] = [
@@ -38,43 +43,137 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     name: "热点采集",
     description: "采集全站热点榜单（30 分钟任务的手动版）",
     paramsSchema: { type: "object", properties: {} },
+    instructions: `---
+name: 热点采集
+description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
+---
+
+# 热点采集
+
+调用 PC 搜索接口采集种子关键词的全站热点，按热度分排序生成 TOP50 榜单快照。
+
+## 参数
+
+无参数。
+
+## 输出
+
+返回本次采集收录的话题数量（collected）。`,
   },
   {
     skillKey: "topic.generate",
     name: "选题生成",
     description: "基于知识库+热点+爆款结构生成选题列表",
     paramsSchema: { type: "object", properties: { count: { type: "number", default: 5 } } },
+    instructions: `---
+name: 选题生成
+description: 基于账号知识库、实时热点与爆款拆解结构，生成可直接落地的选题列表
+---
+
+# 选题生成
+
+结合账号知识库（定位/口吻/经验结论）、当前热点 TOP10 与最新爆款拆解结构，生成小红书选题。
+
+## 参数
+
+- count：生成数量（默认 5，最多 20）
+
+## 输出
+
+返回选题 ID 列表（suggestion_ids）、标题列表（titles）与生成数量（count）。`,
   },
   {
     skillKey: "content.notePack",
     name: "文案包生成",
     description: "生成标题/正文/标签/CTA 完整文案包并保存草稿",
     paramsSchema: { type: "object", properties: { topic: { type: "string" } } },
+    instructions: `---
+name: 文案包生成
+description: 围绕选题生成标题备选、正文、话题标签与行动引导的完整文案包，并保存为草稿
+---
+
+# 文案包生成
+
+围绕给定选题，参考账号知识库生成 3-5 个标题备选、300-800 字正文、话题标签与行动引导，落库为草稿。
+
+## 参数
+
+- topic：选题标题（必填）
+
+## 输出
+
+返回草稿 ID（draft_id）、标题备选（titles）与标签（tags）。`,
   },
   {
     skillKey: "review.submit",
     name: "内容审校",
     description: "双层检测 + 三道门禁审校",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
+    instructions: `---
+name: 内容审校
+description: 对草稿执行合规规则检测与三道门禁审校
+---
+
+# 内容审校
+
+对指定草稿执行双层检测（关键词/规则 + LLM 审校）与三道门禁（广告法/违禁词/敏感内容），生成审校工单。
+
+## 参数
+
+- draft_id：草稿 ID（必填）
+
+## 输出
+
+返回审校工单 ID（review_id）、门禁状态（gate_status）与状态（status）。`,
   },
   {
     skillKey: "script.generate",
     name: "视频脚本生成",
     description: "基于草稿文案生成短视频脚本",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
+    instructions: `---
+name: 视频脚本生成
+description: 将图文草稿转化为 30-60 秒口播分镜脚本
+---
+
+# 视频脚本生成
+
+基于草稿文案生成短视频分镜脚本：开场钩子（前 3 秒）→ 内容展开（分镜列表）→ 结尾引导。
+
+## 参数
+
+- draft_id：草稿 ID（必填）
+
+## 输出
+
+返回分镜脚本文本（script）。`,
   },
   {
     skillKey: "schedule.recommend",
     name: "智能排期",
     description: "基于历史数据推荐发布时间",
     paramsSchema: { type: "object", properties: { platform_account_id: { type: "number" } } },
+    instructions: `---
+name: 智能排期
+description: 基于历史发布数据与平台活跃规律，推荐未来 3 天最佳发布时间
+---
+
+# 智能排期
+
+基于账号历史发布数据与平台活跃规律，推荐未来 3 天的最佳发布时间槽位。
+
+## 参数
+
+- platform_account_id：发布账号 ID（必填）
+
+## 输出
+
+返回推荐时间槽位（slots）与推荐理由（reason）。`,
   },
 ];
 
-/** 确保用户技能注册表已初始化（首次查询时写入种子数据） */
+/** 确保用户技能注册表已初始化（幂等写入种子数据，并为存量记录补齐指令正文） */
 export async function ensureUserSkills(userId: number): Promise<number> {
-  const count = await prisma.skillRegistry.count({ where: { userId } });
-  if (count > 0) return count;
   await prisma.skillRegistry.createMany({
     data: SKILL_CATALOG.map((skill) => ({
       userId,
@@ -82,10 +181,96 @@ export async function ensureUserSkills(userId: number): Promise<number> {
       name: skill.name,
       description: skill.description,
       paramsSchema: skill.paramsSchema as Prisma.InputJsonValue,
+      instructions: skill.instructions,
       createdAt: shanghaiNow(),
     })),
+    skipDuplicates: true,
   });
-  return SKILL_CATALOG.length;
+  // 存量记录（instructions 为空）补齐预置指令正文
+  await prisma.$transaction(
+    SKILL_CATALOG.map((skill) =>
+      prisma.skillRegistry.updateMany({
+        where: { userId, skillKey: skill.skillKey, instructions: "" },
+        data: { instructions: skill.instructions },
+      }),
+    ),
+  );
+  return prisma.skillRegistry.count({ where: { userId } });
+}
+
+/** 技能序列化（含指令正文） */
+export function serializeSkill(skill: {
+  id: number;
+  skillKey: string;
+  name: string;
+  description: string;
+  instructions: string;
+  enabled: boolean;
+  createdAt: Date;
+}): Record<string, unknown> {
+  return {
+    id: skill.id,
+    skill_key: skill.skillKey,
+    name: skill.name,
+    description: skill.description,
+    instructions: skill.instructions,
+    enabled: skill.enabled,
+    created_at: formatDateTime(skill.createdAt),
+  };
+}
+
+/** 创建自定义技能（skillKey 用户级唯一） */
+export async function createUserSkill(options: {
+  userId: number;
+  skillKey: string;
+  name: string;
+  description: string;
+  instructions: string;
+}): Promise<Record<string, unknown>> {
+  const { userId, skillKey, name, description, instructions } = options;
+  const normalizedKey = skillKey.trim();
+  if (!normalizedKey) throw new Error("技能标识（skill_key）不能为空");
+  const existed = await prisma.skillRegistry.findFirst({ where: { userId, skillKey: normalizedKey } });
+  if (existed) throw new Error(`技能标识 ${normalizedKey} 已存在`);
+  const skill = await prisma.skillRegistry.create({
+    data: {
+      userId,
+      skillKey: normalizedKey,
+      name: name.trim() || normalizedKey,
+      description: description.trim(),
+      paramsSchema: { type: "object", properties: {} },
+      instructions,
+      createdAt: shanghaiNow(),
+    },
+  });
+  return serializeSkill(skill);
+}
+
+/** 更新技能（名称/描述/指令正文/启停，仅限本人） */
+export async function updateUserSkill(
+  userId: number,
+  skillId: number,
+  patch: { name?: string; description?: string; instructions?: string; enabled?: boolean },
+): Promise<Record<string, unknown>> {
+  const skill = await prisma.skillRegistry.findFirst({ where: { id: skillId, userId } });
+  if (!skill) throw new Error("技能不存在");
+  const updated = await prisma.skillRegistry.update({
+    where: { id: skillId },
+    data: {
+      ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+      ...(patch.description !== undefined ? { description: patch.description.trim() } : {}),
+      ...(patch.instructions !== undefined ? { instructions: patch.instructions } : {}),
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    },
+  });
+  return serializeSkill(updated);
+}
+
+/** 删除技能（仅限本人） */
+export async function deleteUserSkill(userId: number, skillId: number): Promise<void> {
+  const skill = await prisma.skillRegistry.findFirst({ where: { id: skillId, userId } });
+  if (!skill) throw new Error("技能不存在");
+  await prisma.skillRegistry.delete({ where: { id: skillId } });
 }
 
 // ---------- 工作流定义（预置） ----------
@@ -271,8 +456,22 @@ async function executeSkill(skillKey: string, params: Record<string, unknown>, c
       const result = await recommendSchedules({ userId, platformAccountId: accountId, days: 3 });
       return { slots: result.slots, reason: result.reason };
     }
-    default:
-      throw new Error(`未知技能: ${skillKey}`);
+    default: {
+      // 自定义技能：以注册表维护的 instructions（SKILL.md 风格）作为 system prompt，由 LLM 驱动执行
+      if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法执行自定义技能");
+      const custom = await prisma.skillRegistry.findFirst({ where: { userId, skillKey, enabled: true } });
+      if (!custom || !custom.instructions.trim()) throw new Error(`未知技能: ${skillKey}`);
+      const outputText = await textClient.complete({
+        modelConfig,
+        apiKey,
+        systemPrompt: custom.instructions,
+        userPrompt: `请执行该技能。技能参数（JSON）：${JSON.stringify(params)}\n只输出 JSON 结果。`,
+        temperature: 0.3,
+        onUsage: makeUsageLogger(userId, modelConfig.modelName), // S-06 用量采集
+      });
+      const payload = extractJsonObject<Record<string, unknown>>(outputText);
+      return payload ?? { result: outputText };
+    }
   }
 }
 

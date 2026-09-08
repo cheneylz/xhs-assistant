@@ -7,6 +7,7 @@ import { decryptText } from "@/lib/server/core/security";
 import { formatDateTime, shanghaiNow } from "@/lib/server/core/time";
 import { OpenAICompatibleTextClient } from "@/lib/server/services/ai-service";
 import { dataItems, normalizeSearchItem } from "@/lib/server/services/crawl-normalizers";
+import { renderPrompt } from "@/prompts/loader";
 import { calculateNextRunAt } from "@/lib/server/services/scheduler-service";
 import { NextResponse } from "next/server";
 import { serializeAutoTask, verifyAccountOwnership } from "../../shared";
@@ -162,7 +163,7 @@ export const POST = handle(async (req, { params }) => {
     const rewrittenTitle = await textClient.complete({
       modelConfig,
       apiKey,
-      systemPrompt: "你是小红书标题创作专家。",
+      systemPrompt: renderPrompt("auto-tasks.md", "title-rewrite"),
       userPrompt: `为以下小红书笔记改写一个吸引人的标题（15字以内）：\n\n原标题：${draft.title}\n\n正文：${rewrittenBody.slice(0, 200)}`,
       temperature: 0.8,
     });

@@ -1,7 +1,7 @@
 import { getCurrentUser } from "@/lib/server/core/auth";
 import { ApiError } from "@/lib/server/core/http-error";
 import { handle, readJson } from "@/lib/server/core/route";
-import { analyzeExplosions, listExplosionReports } from "@/lib/server/services/exploration-service";
+import { analyzeExplosions, deleteExplosionReports, listExplosionReports } from "@/lib/server/services/exploration-service";
 import { OpenAICompatibleTextClient } from "@/lib/server/services/ai-service";
 import { textModelContext } from "../../../ai/shared";
 import { makeUsageLogger } from "@/lib/server/services/usage-service";
@@ -11,6 +11,10 @@ import { z } from "zod";
 const AnalyzeSchema = z.object({
   keyword: z.string().min(1).max(50),
   range_days: z.number().int().min(1).max(30).default(7),
+});
+
+const DeleteBatchSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(100),
 });
 
 /** POST /api/xhs/analytics/explosions P-02 爆款拆解：搜索低粉高互动笔记 → LLM 结构化拆解报告 */
@@ -41,4 +45,12 @@ export const GET = handle(async (req, { searchParams }) => {
   const limit = Number.parseInt(searchParams.get("limit") ?? "20", 10);
   const items = await listExplosionReports(user.id, Number.isNaN(limit) ? 20 : limit);
   return NextResponse.json({ items });
+});
+
+/** DELETE /api/xhs/analytics/explosions 批量删除拆解报告（body: {ids}，仅限本人） */
+export const DELETE = handle(async (req) => {
+  const user = await getCurrentUser(req);
+  const payload = await readJson(req, DeleteBatchSchema);
+  const deleted = await deleteExplosionReports(user.id, payload.ids);
+  return NextResponse.json({ deleted });
 });

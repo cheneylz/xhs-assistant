@@ -28,8 +28,9 @@ RUN apk add --no-cache ffmpeg \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# 签名 SDK 的 JS 文件与 Prisma 运行时（standalone 不含未引用文件，需显式拷贝）
+# 签名 SDK 的 JS 文件、Prompts 目录与 Prisma 运行时（standalone 不含未引用文件，需显式拷贝）
 COPY --from=builder --chown=nextjs:nodejs /app/src/lib/server/xhs/js ./src/lib/server/xhs/js
+COPY --from=builder --chown=nextjs:nodejs /app/src/prompts ./src/prompts
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 

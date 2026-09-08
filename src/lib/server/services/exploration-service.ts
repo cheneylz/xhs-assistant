@@ -12,6 +12,7 @@ import { prisma } from "../core/db";
 import { decryptText } from "../core/security";
 import { extractJsonObject } from "../core/json-extract";
 import { formatDateTime, shanghaiNow } from "../core/time";
+import { renderPrompt } from "../../../prompts/loader";
 import { dataItems, normalizeSearchItem } from "./crawl-normalizers";
 import type { TextClientLike } from "./review-service";
 import type { ModelConfigLike } from "./ai-service";
@@ -45,14 +46,6 @@ export function parseExplosionPatterns(content: string): ExplosionPatterns {
     engagePatterns: pick("engage_patterns"),
   };
 }
-
-const EXPLOSION_SYSTEM_PROMPT = `你是小红书爆款笔记分析师，擅长拆解高互动笔记的可复制结构。
-分析给定笔记样本（低粉高互动），从四个维度输出可复用的规律：
-- title_patterns：标题公式（如 [痛点]+[解决方案]+[结果]），3-5 条
-- cover_patterns：封面要素（构图/文字/色彩/箭头引导），3-5 条
-- body_patterns：正文框架（如 痛点引入→干货展开→互动引导），3-5 条
-- engage_patterns：互动引导话术规律，3-5 条
-只输出 JSON，格式：{"title_patterns":[...],"cover_patterns":[...],"body_patterns":[...],"engage_patterns":[...]}`;
 
 /** 搜索接口适配器（与热点采集共用形态） */
 export interface ExplorationSearchAdapter {
@@ -112,7 +105,7 @@ export async function analyzeExplosions(options: {
   const content = await textClient.complete({
     modelConfig,
     apiKey,
-    systemPrompt: EXPLOSION_SYSTEM_PROMPT,
+    systemPrompt: renderPrompt("exploration.md", "explosion"),
     userPrompt: `分析范围：近 ${rangeDays} 天\n关键词：${keyword}\n\n爆款样本：\n${sampleText}`,
     temperature: 0.3,
     onUsage: makeUsageLogger(userId, modelConfig.modelName), // S-06 用量采集
@@ -135,11 +128,25 @@ export async function analyzeExplosions(options: {
         collects: item.collects,
         comments: item.comments,
         cover_url: item.cover_url,
+        note_url: item.note_url, // 原贴链接（用于「查看原贴」跳转）
       })) as unknown as Prisma.InputJsonValue,
       createdAt: shanghaiNow(),
     },
   });
   return { report: serializeExplosionReport(report) };
+}
+
+/** 删除爆款拆解报告（仅限本人） */
+export async function deleteExplosionReport(userId: number, reportId: number): Promise<void> {
+  const report = await prisma.explosionReport.findFirst({ where: { id: reportId, userId } });
+  if (!report) throw new Error("拆解报告不存在");
+  await prisma.explosionReport.delete({ where: { id: reportId } });
+}
+
+/** 批量删除爆款拆解报告（仅限本人，返回实际删除条数） */
+export async function deleteExplosionReports(userId: number, ids: number[]): Promise<number> {
+  const result = await prisma.explosionReport.deleteMany({ where: { id: { in: ids }, userId } });
+  return result.count;
 }
 
 /** 用户最近的爆款拆解报告列表（取最近 20 条） */

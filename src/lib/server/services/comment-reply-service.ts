@@ -13,6 +13,7 @@ import { prisma } from "../core/db";
 import { decryptText } from "../core/security";
 import { extractJsonObject } from "../core/json-extract";
 import { formatDateTime, shanghaiNow } from "../core/time";
+import { renderPrompt } from "../../../prompts/loader";
 import { noteUrl } from "./crawl-normalizers";
 import type { TextClientLike } from "./review-service";
 import type { ModelConfigLike } from "./ai-service";
@@ -43,8 +44,6 @@ export function parseIntent(content: string): CommentIntent {
   return matched ?? "other";
 }
 
-const INTENT_SYSTEM_PROMPT = `你是小红书评论区意图分析助手。判断评论意图并输出 JSON：{"intent":"question|praise|complaint|ad|other","summary":"一句话概括"}`;
-
 /** 从评论内容中提取关键词（触发规则匹配用，纯函数） */
 export function extractKeywords(content: string): string[] {
   const matches = content.match(/[一-鿿]{2,8}/g) ?? [];
@@ -72,7 +71,7 @@ async function classifyAndGenerate(options: {
     const content = await options.textClient.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: INTENT_SYSTEM_PROMPT,
+      systemPrompt: renderPrompt("comment-reply.md", "intent"),
       userPrompt: `评论内容：${options.commentContent.slice(0, 500)}`,
       temperature: 0.2,
       onUsage: usageLogger,
@@ -83,7 +82,7 @@ async function classifyAndGenerate(options: {
     const reply = await options.textClient.complete({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      systemPrompt: "你是小红书博主本人，用自然口语化的方式回复粉丝评论，30 字以内，不要用模板腔。",
+      systemPrompt: renderPrompt("comment-reply.md", "reply"),
       userPrompt: `评论：${options.commentContent.slice(0, 300)}`,
       temperature: 0.7,
       onUsage: usageLogger,

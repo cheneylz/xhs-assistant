@@ -10,8 +10,10 @@ import {
 } from "@ant-design/icons";
 import {
   Alert,
+  Avatar,
   Button,
   Card,
+  Checkbox,
   Drawer,
   Form,
   Input,
@@ -34,6 +36,10 @@ import { PageHeader } from "@/components/layout/app-shell";
 import {
   acceptSuggestion,
   analyzeExplosions,
+  deleteExplosionReport,
+  deleteExplosionReports,
+  deleteSuggestion,
+  deleteSuggestions,
   fetchExplosionReports,
   fetchHotTopicHistory,
   fetchHotTopics,
@@ -79,6 +85,10 @@ export default function PlannerPage() {
   const [suggestions, setSuggestions] = useState<TopicSuggestion[]>([]);
   const [sugForm] = Form.useForm<{ count: number; direction: string }>();
   const [generating, setGenerating] = useState(false);
+
+  // 批量删除选中项
+  const [selectedReportIds, setSelectedReportIds] = useState<number[]>([]);
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<number[]>([]);
 
   async function loadHotTopics() {
     setHotLoading(true);
@@ -185,6 +195,53 @@ export default function PlannerPage() {
     }
   }
 
+  async function handleDeleteReport(reportId: number) {
+    try {
+      await deleteExplosionReport(reportId);
+      message.success("拆解报告已删除");
+      await loadReports();
+    } catch (error) {
+      message.error(`删除失败: ${(error as Error).message}`);
+    }
+  }
+
+  async function handleDeleteSuggestion(suggestionId: number) {
+    try {
+      await deleteSuggestion(suggestionId);
+      message.success("选题已删除");
+      await loadSuggestions();
+    } catch (error) {
+      message.error(`删除失败: ${(error as Error).message}`);
+    }
+  }
+
+  /** 切换单条选中（批量删除用） */
+  function toggleSelect(selected: number[], setSelected: (value: number[]) => void, id: number, checked: boolean) {
+    setSelected(checked ? [...selected, id] : selected.filter((item) => item !== id));
+  }
+
+  async function handleBatchDeleteReports() {
+    try {
+      const result = await deleteExplosionReports(selectedReportIds);
+      message.success(`已删除 ${result.deleted} 条拆解报告`);
+      setSelectedReportIds([]);
+      await loadReports();
+    } catch (error) {
+      message.error(`批量删除失败: ${(error as Error).message}`);
+    }
+  }
+
+  async function handleBatchDeleteSuggestions() {
+    try {
+      const result = await deleteSuggestions(selectedSuggestionIds);
+      message.success(`已删除 ${result.deleted} 条选题`);
+      setSelectedSuggestionIds([]);
+      await loadSuggestions();
+    } catch (error) {
+      message.error(`批量删除失败: ${(error as Error).message}`);
+    }
+  }
+
   const hotColumns: ColumnsType<HotTopicEntry> = [
     { title: "排名", dataIndex: "rank", width: 60, render: (rank: number) => <Text strong>{rank}</Text> },
     {
@@ -281,25 +338,55 @@ export default function PlannerPage() {
             </Form.Item>
           </Form>
           {reports.length > 0 && (
-            <List
-              size="small"
-              style={{ marginTop: 12 }}
-              dataSource={reports.slice(0, 5)}
-              renderItem={(report) => (
-                <List.Item
-                  actions={[
-                    <Button key="view" size="small" type="link" onClick={() => { setReportDetail(report); setShowReport(true); }}>
-                      查看报告
-                    </Button>,
-                  ]}
+            <div style={{ marginTop: 12 }}>
+              <Space size={16} style={{ marginBottom: 8 }}>
+                <Checkbox
+                  checked={selectedReportIds.length > 0 && selectedReportIds.length === reports.slice(0, 5).length}
+                  indeterminate={selectedReportIds.length > 0 && selectedReportIds.length < reports.slice(0, 5).length}
+                  onChange={(e) => setSelectedReportIds(e.target.checked ? reports.slice(0, 5).map((report) => report.id) : [])}
                 >
-                  <List.Item.Meta
-                    title={report.keyword}
-                    description={`${report.range_days} 天范围 · ${report.sample_notes.length} 个爆款样本 · ${formatShanghaiTime(report.created_at)}`}
-                  />
-                </List.Item>
-              )}
-            />
+                  全选
+                </Checkbox>
+                {selectedReportIds.length > 0 && (
+                  <>
+                    <Text type="secondary">已选 {selectedReportIds.length} 条</Text>
+                    <Popconfirm title={`删除选中的 ${selectedReportIds.length} 条拆解报告？`} onConfirm={() => void handleBatchDeleteReports()}>
+                      <Button size="small" danger>
+                        批量删除
+                      </Button>
+                    </Popconfirm>
+                  </>
+                )}
+              </Space>
+              <List
+                size="small"
+                dataSource={reports.slice(0, 5)}
+                renderItem={(report) => (
+                  <List.Item
+                    actions={[
+                      <Button key="view" size="small" type="link" onClick={() => { setReportDetail(report); setShowReport(true); }}>
+                        查看报告
+                      </Button>,
+                      <Popconfirm key="delete" title="删除该拆解报告？" onConfirm={() => void handleDeleteReport(report.id)}>
+                        <Button size="small" type="link" danger>
+                          删除
+                        </Button>
+                      </Popconfirm>,
+                    ]}
+                  >
+                    <Checkbox
+                      style={{ marginRight: 12 }}
+                      checked={selectedReportIds.includes(report.id)}
+                      onChange={(e) => toggleSelect(selectedReportIds, setSelectedReportIds, report.id, e.target.checked)}
+                    />
+                    <List.Item.Meta
+                      title={report.keyword}
+                      description={`${report.range_days} 天范围 · ${report.sample_notes.length} 个爆款样本 · ${formatShanghaiTime(report.created_at)}`}
+                    />
+                  </List.Item>
+                )}
+              />
+            </div>
           )}
         </Card>
 
@@ -325,45 +412,75 @@ export default function PlannerPage() {
               </Button>
             </Form.Item>
           </Form>
-          <List
-            size="small"
-            style={{ marginTop: 12 }}
-            locale={{ emptyText: "暂无选题，点击「生成选题」基于知识库+热点+爆款结构生成" }}
-            dataSource={suggestions}
-            renderItem={(suggestion) => (
-              <List.Item
-                actions={[
-                  suggestion.status === "open" ? (
-                    <Popconfirm key="accept" title="加入内容生产队列（生成草稿）？" onConfirm={() => void handleAccept(suggestion)}>
-                      <Button size="small" type="primary" icon={<PlusOutlined />}>
-                        采纳
-                      </Button>
-                    </Popconfirm>
-                  ) : (
-                    <Tag key="accepted" color="green">已采纳</Tag>
-                  ),
-                ]}
+          <div style={{ marginTop: 12 }}>
+            <Space size={16} style={{ marginBottom: 8 }}>
+              <Checkbox
+                checked={selectedSuggestionIds.length > 0 && selectedSuggestionIds.length === suggestions.length}
+                indeterminate={selectedSuggestionIds.length > 0 && selectedSuggestionIds.length < suggestions.length}
+                onChange={(e) => setSelectedSuggestionIds(e.target.checked ? suggestions.map((suggestion) => suggestion.id) : [])}
               >
-                <List.Item.Meta
-                  title={
-                    <Space wrap>
-                      <Text strong>{suggestion.title}</Text>
-                      <Tag color="blue">预估热度 {suggestion.predicted_heat}</Tag>
-                      {suggestion.direction && <Tag>{suggestion.direction}</Tag>}
-                    </Space>
-                  }
-                  description={
-                    <Space wrap>
-                      {suggestion.tags.map((tag) => (
-                        <Tag key={tag}>#{tag}</Tag>
-                      ))}
-                      <Text type="secondary" style={{ fontSize: 12 }}>依据：{suggestion.source}</Text>
-                    </Space>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+                全选
+              </Checkbox>
+              {selectedSuggestionIds.length > 0 && (
+                <>
+                  <Text type="secondary">已选 {selectedSuggestionIds.length} 条</Text>
+                  <Popconfirm title={`删除选中的 ${selectedSuggestionIds.length} 条选题？`} onConfirm={() => void handleBatchDeleteSuggestions()}>
+                    <Button size="small" danger>
+                      批量删除
+                    </Button>
+                  </Popconfirm>
+                </>
+              )}
+            </Space>
+            <List
+              size="small"
+              locale={{ emptyText: "暂无选题，点击「生成选题」基于知识库+热点+爆款结构生成" }}
+              dataSource={suggestions}
+              renderItem={(suggestion) => (
+                <List.Item
+                  actions={[
+                    suggestion.status === "open" ? (
+                      <Popconfirm key="accept" title="加入内容生产队列（生成草稿）？" onConfirm={() => void handleAccept(suggestion)}>
+                        <Button size="small" type="primary" icon={<PlusOutlined />}>
+                          采纳
+                        </Button>
+                      </Popconfirm>
+                    ) : (
+                      <Tag key="accepted" color="green">已采纳</Tag>
+                    ),
+                    <Popconfirm key="delete" title="删除该选题？" onConfirm={() => void handleDeleteSuggestion(suggestion.id)}>
+                      <Button size="small" type="link" danger>
+                        删除
+                      </Button>
+                    </Popconfirm>,
+                  ]}
+                >
+                  <Checkbox
+                    style={{ marginRight: 12 }}
+                    checked={selectedSuggestionIds.includes(suggestion.id)}
+                    onChange={(e) => toggleSelect(selectedSuggestionIds, setSelectedSuggestionIds, suggestion.id, e.target.checked)}
+                  />
+                  <List.Item.Meta
+                    title={
+                      <Space wrap>
+                        <Text strong>{suggestion.title}</Text>
+                        <Tag color="blue">预估热度 {suggestion.predicted_heat}</Tag>
+                        {suggestion.direction && <Tag>{suggestion.direction}</Tag>}
+                      </Space>
+                    }
+                    description={
+                      <Space wrap>
+                        {suggestion.tags.map((tag) => (
+                          <Tag key={tag}>#{tag}</Tag>
+                        ))}
+                        <Text type="secondary" style={{ fontSize: 12 }}>依据：{suggestion.source}</Text>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+          </div>
         </Card>
       </Space>
 
@@ -405,8 +522,19 @@ export default function PlannerPage() {
                   size="small"
                   dataSource={reportDetail.sample_notes}
                   renderItem={(sample) => (
-                    <List.Item>
+                    <List.Item
+                      actions={
+                        sample.note_url
+                          ? [
+                              <a key="original" href={sample.note_url} target="_blank" rel="noreferrer">
+                                查看原贴 ↗
+                              </a>,
+                            ]
+                          : undefined
+                      }
+                    >
                       <List.Item.Meta
+                        avatar={sample.cover_url ? <Avatar shape="square" size={40} src={sample.cover_url} /> : null}
                         title={sample.title}
                         description={`@${sample.author} · 赞 ${sample.likes} 藏 ${sample.collects} 评 ${sample.comments}`}
                       />
