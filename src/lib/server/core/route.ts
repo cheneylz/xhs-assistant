@@ -2,7 +2,7 @@
  * 路由处理辅助（对应原版 FastAPI 的依赖注入 + 异常统一出口）
  * 所有 Route Handler 统一使用 handler() 包装，错误自动转为 {"detail": ...}
  */
-import type { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import type { ZodType } from "zod";
 import { ApiError, toErrorResponse, zodError } from "./http-error";
 
@@ -13,7 +13,13 @@ export interface RouteContext {
   searchParams: URLSearchParams;
 }
 
-export type RouteHandler = (req: NextRequest, ctx: RouteContext) => Promise<NextResponse> | NextResponse;
+/**
+ * 路由处理函数。返回值放宽到 `Response` 而非 `NextResponse`：
+ * SSE 等流式接口返回的是 `new Response(readableStream)`。
+ * 这是安全的加宽 —— `NextResponse extends Response`，148 个既有路由的返回值
+ * 仍然满足该类型，无需逐处修改（P1 设计稿 §3.4）。
+ */
+export type RouteHandler = (req: NextRequest, ctx: RouteContext) => Promise<Response> | Response;
 
 /** 包装路由处理函数：统一异常转 JSON 响应 */
 export function handle(fn: RouteHandler) {
