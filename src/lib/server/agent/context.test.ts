@@ -19,6 +19,24 @@ function assistantWithToolCall(id: string, toolName: string) {
   } as never;
 }
 
+/**
+ * 造一条「带正文 + toolCall」的 assistant 消息。
+ *
+ * 修正循环的测试必须用这个：estimateChars 只统计 text 块、对 toolCall 块计 0 字符，
+ * 所以纯 toolCall 的 assistant 永远放得进预算，切点根本落不到 toolResult 上，
+ * 那样测出来的「无孤立 toolResult」是假通过 —— 删掉修正循环测试照样绿。
+ */
+function assistantWithTextAndToolCall(id: string, toolName: string, text: string) {
+  return {
+    role: "assistant",
+    content: [
+      { type: "text", text },
+      { type: "toolCall", id, name: toolName, arguments: {} },
+    ],
+    timestamp: 0,
+  } as never;
+}
+
 /** 造一条 toolResult 消息 */
 function toolResult(id: string, text: string) {
   return {
@@ -80,6 +98,27 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
     const result = pruneByCharBudget(messages, 400);
     const hasOrphan = result.some((m) => (m as { role: string }).role === "toolResult");
     expect(hasOrphan).toBe(false);
+  });
+
+  it("切点恰好落在 toolResult 时被修正循环推进（真正守护孤立不变量）", () => {
+    // 上一个用例是「假通过」：那里 toolResult 有 2000 字符，永远放不进 400 的预算，
+    // 切点会落在 user 消息上，修正循环一次都不执行 —— 把它删掉测试照样绿。
+    // 这里用带正文的 assistant（计 50 字符）+ 500 字符 toolResult + 2 字符 user，
+    // 预算取 520：正好容得下 user + toolResult，容不下 assistant，
+    // 于是切点停在 toolResult 上，必须靠修正循环推进。
+    const messages = [
+      systemMsg(""),
+      assistantWithTextAndToolCall("call-1", "topic.generate", "字".repeat(50)),
+      toolResult("call-1", "A".repeat(500)),
+      userMsg("短"),
+    ];
+    const result = pruneByCharBudget(messages, 520) as Array<{ role: string }>;
+    // 修正循环未生效时结果是 [..., toolResult, user]，孤立结果会留给模型
+    expect(result.some((m) => m.role === "toolResult")).toBe(false);
+    // 同时最新的 user 消息必须保留（不能为了消除孤立把有效内容一起丢掉）
+    expect(result.some((m) => m.role === "user")).toBe(true);
+    // assistant 与其 toolResult 应当成对消失
+    expect(result.some((m) => m.role === "assistant")).toBe(false);
   });
 
   it("保留 assistant 工具调用时其 toolResult 也保留", () => {

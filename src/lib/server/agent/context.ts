@@ -37,13 +37,6 @@ export function estimateChars(message: unknown): number {
   return 0;
 }
 
-/** 消息是否携带工具调用（assistant 消息的 content 里有 type="toolCall" 块） */
-function hasToolCall(message: unknown): boolean {
-  const content = (message as MinimalMessage)?.content;
-  if (!Array.isArray(content)) return false;
-  return content.some((block) => (block as { type?: string })?.type === "toolCall");
-}
-
 /** 消息是否是工具结果 */
 function isToolResult(message: unknown): boolean {
   return (message as MinimalMessage)?.role === "toolResult";
@@ -67,7 +60,7 @@ export function pruneByCharBudget<T>(messages: T[], charBudget: number): T[] {
   }
 
   const systemChars = systemMessages.reduce((sum, m) => sum + estimateChars(m), 0);
-  let budget = charBudget - systemChars;
+  const budget = charBudget - systemChars;
 
   let cutIndex = conversational.length;
   let used = 0;
