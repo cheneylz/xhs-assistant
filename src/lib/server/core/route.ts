@@ -36,6 +36,18 @@ export function handle(fn: RouteHandler) {
   };
 }
 
+/**
+ * 解析并校验路径参数里的整数 id（路径参数永远是字符串）。
+ *
+ * label 只用于错误信息，便于前端定位是哪个参数。此前 148 个既有路由各自裸用
+ * Number.parseInt（不校验），新路由统一走这里；**不要**顺手迁移既有路由。
+ */
+export function parsePathId(raw: string, label = "id"): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) throw new ApiError(400, `${label} 非法`);
+  return value;
+}
+
 /** 解析 JSON 请求体（可选 zod 校验，校验失败抛 422） */
 export async function readJson<T>(req: NextRequest, schema?: ZodType<T>): Promise<T> {
   let body: unknown;
