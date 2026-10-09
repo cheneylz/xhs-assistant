@@ -37,21 +37,30 @@ export function serializeConversation(row: {
 export interface SerializedAgentRun {
   id: number;
   conversation_id: number;
+  task_id: number;
   status: string;
   step_count: number;
+  max_steps: number;
   tokens_used: number;
+  token_budget: number;
   error_type: string | null;
   created_at: string;
   finished_at: string | null;
 }
 
-/** 只暴露前端需要的字段：taskId / maxSteps / tokenBudget 是内部护栏参数，不外泄 */
+/**
+ * 同时返回 task_id / max_steps / token_budget：前端要显示「第 3/20 步」这类护栏进度，
+ * 并需要 task_id 深链到任务中心。它们不是敏感信息，藏着只会让前端再来改契约。
+ */
 export function serializeRun(row: {
   id: number;
   conversationId: number;
+  taskId: number;
   status: string;
   stepCount: number;
+  maxSteps: number;
   tokensUsed: number;
+  tokenBudget: number;
   errorType: string | null;
   createdAt: Date;
   finishedAt: Date | null;
@@ -59,9 +68,12 @@ export function serializeRun(row: {
   return {
     id: row.id,
     conversation_id: row.conversationId,
+    task_id: row.taskId,
     status: row.status,
     step_count: row.stepCount,
+    max_steps: row.maxSteps,
     tokens_used: row.tokensUsed,
+    token_budget: row.tokenBudget,
     error_type: row.errorType,
     created_at: formatDateTime(row.createdAt),
     finished_at: row.finishedAt ? formatDateTime(row.finishedAt) : null,

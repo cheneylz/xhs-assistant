@@ -31,10 +31,11 @@ export const SSE_HEARTBEAT_MS = 15_000;
  *
  * 组成理由：
  *   message_end —— 中间过程助手文本（D23 让它的载荷里有 text）
- *   artifact    —— 右栏工件（首屏与 artifacts 接口同源）
  *   status      —— 终态结论与告警（循环里写入的 level/message）
  *   error       —— 循环级异常（如「未配置默认文本模型」）
  *
+ * **不含** artifact：工件由首屏的 `artifacts` 字段（与接口 6 同源）专门返回，
+ * 事件回放里也带上会让同一张工件卡渲染两遍。
  * **不含** tool_execution_* 与 message_update：工具卡由 agent_tool_calls 承担
  * （按 tool_call_id 归并），把它们也回放会让同一张卡片渲染两遍。
  *
@@ -43,7 +44,7 @@ export const SSE_HEARTBEAT_MS = 15_000;
  * `{role, trimmed:true}`。渲染前必须同时判定 `payload.role === "assistant"`
  * 与 `text` 非空，否则会出现空白气泡。
  */
-export const RENDERABLE_EVENT_TYPES = ["message_end", "artifact", "status", "error"] as const;
+export const RENDERABLE_EVENT_TYPES = ["message_end", "status", "error"] as const;
 
 /** 该事件类型是否要回放给前端（首屏 events 字段用） */
 export function isRenderableEvent(type: string): boolean {

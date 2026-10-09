@@ -34,9 +34,11 @@ describe("encodeSseFrame（帧编码）", () => {
 });
 
 describe("isRenderableEvent（首屏回放判定）", () => {
-  it("过程文本 / 工件 / 状态 / 错误四类要回放", () => {
-    expect(RENDERABLE_EVENT_TYPES).toEqual(["message_end", "artifact", "status", "error"]);
+  it("过程文本 / 状态 / 错误三类要回放；工件与工具卡各有专门来源，不回放", () => {
+    expect(RENDERABLE_EVENT_TYPES).toEqual(["message_end", "status", "error"]);
     for (const type of RENDERABLE_EVENT_TYPES) expect(isRenderableEvent(type)).toBe(true);
+    // artifact 由首屏的 artifacts 字段返回，回放会让工件卡渲染两遍
+    expect(isRenderableEvent("artifact")).toBe(false);
   });
 
   it("增量与工具执行事件不回放（工具卡由 agent_tool_calls 承担，回放会渲染两遍）", () => {

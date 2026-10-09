@@ -282,7 +282,14 @@ async function agentRunRunner(): Promise<void> {
   const runs = await claimPendingRuns(AGENT_MAX_CONCURRENCY);
   if (runs.length === 0) return;
   console.log(`[worker] agent 领取到 ${runs.length} 个待执行 Run`);
-  await Promise.allSettled(runs.map((run) => executeAgentRun(run)));
+  const results = await Promise.allSettled(runs.map((run) => executeAgentRun(run)));
+  // allSettled 会把异常全部吞掉：没有这段日志，Run 行被删、数据库抖动这类失败
+  // 会完全静默 —— 模型还在烧 token，日志里却什么都没有。
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      console.error(`[worker] Run ${runs[index].id} 执行失败:`, result.reason);
+    }
+  });
 }
 
 /** 启动时清扫卡死的 Run */
