@@ -36,6 +36,8 @@ import { XhsCreatorLoginAdapter } from "../lib/server/xhs/adapters/creator-login
 import { XhsPcLoginAdapter } from "../lib/server/xhs/adapters/pc-login-adapter.ts";
 import {
   claimPendingRuns,
+  DEFAULT_CONVERSATION_TITLE,
+  deriveConversationTitle,
   finishRun,
   listMessages,
   sweepStuckRuns,
@@ -270,10 +272,14 @@ async function executeAgentRun(run: AgentRun): Promise<void> {
   // 必须走 updateConversationStatus：它负责刷新 updatedAt。
   // 直接 prisma.agentConversation.update 会漏掉 updatedAt，
   // 因为该字段没有 @updatedAt、也没有库级默认值。
+  // 标题派生用与路由同源的 deriveConversationTitle —— 此前这里是 content.slice(0, 20)，
+  // 两份实现已经漂移（不 trim、不加省略号），改标题规则会只改到一半。
   await updateConversationStatus({
     conversationId: run.conversationId,
     status: "idle",
-    ...(conversation?.title === "新任务" ? { title: triggerMessage.content.slice(0, 20) } : {}),
+    ...(conversation?.title === DEFAULT_CONVERSATION_TITLE
+      ? { title: deriveConversationTitle(triggerMessage.content) }
+      : {}),
   });
 }
 

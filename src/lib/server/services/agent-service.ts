@@ -12,6 +12,9 @@ import { shanghaiNow } from "../core/time";
 /** 会话标题最大长度 */
 const TITLE_MAX_LENGTH = 20;
 
+/** 会话默认标题（首建与「是否还是默认标题」的判断共用，避免字符串散落各处） */
+export const DEFAULT_CONVERSATION_TITLE = "新任务";
+
 export interface RunDefaults {
   status: string;
   stepCount: number;
@@ -45,7 +48,7 @@ export function isRunTerminal(status: string): boolean {
 /** 由首条用户消息派生会话标题 */
 export function deriveConversationTitle(text: string): string {
   const trimmed = text.trim();
-  if (!trimmed) return "新任务";
+  if (!trimmed) return DEFAULT_CONVERSATION_TITLE;
   if (trimmed.length <= TITLE_MAX_LENGTH) return trimmed;
   return `${trimmed.slice(0, TITLE_MAX_LENGTH)}…`;
 }
@@ -57,7 +60,7 @@ export function deriveConversationTitle(text: string): string {
  * updatedAt 刻意不用 Prisma 的 @updatedAt —— 那会按真实 UTC 时钟填充，
  * 与全库「朴素上海墙钟」约定差 8 小时。
  */
-export async function createConversation(userId: number, title = "新任务"): Promise<AgentConversation> {
+export async function createConversation(userId: number, title = DEFAULT_CONVERSATION_TITLE): Promise<AgentConversation> {
   const now = shanghaiNow();
   return prisma.agentConversation.create({
     data: { userId, title, status: "idle", createdAt: now, updatedAt: now },
@@ -119,50 +122,67 @@ export async function appendMessage(options: {
 
 /**
  * 用户发消息 → 建 Run。
- * 同时复用 Task 表（taskType="agent_run"），让任务中心能展示 Agent 任务，
+ *
+ * 同时复用 Task 表（taskType="agent_run"），让任务中心能展示 Agent 任务；
  * 并把会话置为 running，让前端能区分「空闲」与「执行中」（禁用输入框、显示加载态）。
+ *
+ * **三次写入必须同事务**：Run 一旦可见就可能被 worker 领取并跑完整轮（把会话置回 idle）。
+ * 分开写会出现两种坏结局 ——「Run 已在跑、会话还是 idle」或「Run 已跑完、会话被改回 running」
+ * （后者会让前端永远停在执行中）。首条消息的标题也必须在这一次写入里落下去，同理。
  */
 export async function createRunForMessage(options: {
   conversationId: number;
   userId: number;
   messageId: number;
+  /** 首条消息时一并写下的会话标题；不是首条则传 undefined（不动标题） */
+  title?: string;
   env?: Record<string, string | undefined>;
 }): Promise<AgentRun> {
   const defaults = buildRunDefaults(options.env);
-  const task = await prisma.task.create({
-    data: {
-      userId: options.userId,
-      platform: "xhs",
-      taskType: "agent_run",
-      status: "pending",
-      progress: 0,
-      payload: { conversation_id: options.conversationId } as Prisma.InputJsonValue,
-      // createdAt 无库级默认值，必须显式传
-      createdAt: shanghaiNow(),
-    },
-  });
-  const run = await prisma.agentRun.create({
-    data: {
-      conversationId: options.conversationId,
-      userId: options.userId,
-      taskId: task.id,
-      triggerMessageId: options.messageId,
-      status: defaults.status,
-      stepCount: defaults.stepCount,
-      tokensUsed: defaults.tokensUsed,
-      maxSteps: defaults.maxSteps,
-      tokenBudget: defaults.tokenBudget,
-      // createdAt 无库级默认值，必须显式传
-      createdAt: shanghaiNow(),
-    },
-  });
+  const now = shanghaiNow();
 
-  // 会话置为 running：前端据此区分「空闲」与「执行中」。
-  // 必须走 updateConversationStatus —— 它负责刷新 updatedAt（该字段既无库级默认值也无 @updatedAt）。
-  // 放在 Run 创建成功之后：若建 Run 失败，不应把会话留在 running。
-  await updateConversationStatus({ conversationId: options.conversationId, status: "running" });
+  return prisma.$transaction(async (tx): Promise<AgentRun> => {
+    const task = await tx.task.create({
+      data: {
+        userId: options.userId,
+        platform: "xhs",
+        taskType: "agent_run",
+        status: "pending",
+        progress: 0,
+        payload: { conversation_id: options.conversationId } as Prisma.InputJsonValue,
+        // createdAt 无库级默认值，必须显式传
+        createdAt: now,
+      },
+    });
+    const run = await tx.agentRun.create({
+      data: {
+        conversationId: options.conversationId,
+        userId: options.userId,
+        taskId: task.id,
+        triggerMessageId: options.messageId,
+        status: defaults.status,
+        stepCount: defaults.stepCount,
+        tokensUsed: defaults.tokensUsed,
+        maxSteps: defaults.maxSteps,
+        tokenBudget: defaults.tokenBudget,
+        // createdAt 无库级默认值，必须显式传
+        createdAt: now,
+      },
+    });
 
-  return run;
+    // 会话置为 running。这里直接写 updatedAt，而不是调 updateConversationStatus ——
+    // 那个助手用全局 prisma，进不了事务；漏掉 updatedAt 会让按更新时间排序的会话列表错乱。
+    await tx.agentConversation.update({
+      where: { id: options.conversationId },
+      data: {
+        status: "running",
+        ...(options.title !== undefined ? { title: options.title } : {}),
+        updatedAt: now,
+      },
+    });
+
+    return run;
+  });
 }
 
 /**
@@ -490,26 +510,41 @@ export async function cancelPendingRun(runId: number, userId: number): Promise<C
   });
 }
 
+/** 删除会话的结果（路由层翻译成状态码：deleted → 200 / not_found → 404 / active_run → 409） */
+export type DeleteConversationResult = "deleted" | "not_found" | "active_run";
+
 /**
- * 删除会话及其全部关联行；会话不存在或不属于该用户时返回 false（路由层据此转 404）。
+ * 删除会话及其全部关联行。
  *
  * Prisma 的级联**只覆盖声明了关系的表**（agent_messages / agent_runs）。
  * agent_events / agent_tool_calls / tasks 与 Run 之间只有裸整数外键、没有关系声明，
  * 不显式删就会留下孤儿行 —— 事件与工具调用的孤儿尤其难查（它们没有可关联的会话）。
+ *
+ * 归属校验在**最前**：不能对「他人的执行中会话」返回 active_run，那会泄露该 id 的存在与活跃度。
+ * 执行中的会话也不允许删：worker 在删完后仍会继续写库（事件表没有外键），
+ * 那些行会成为永远查不回来的孤儿，且 worker 的 finishRun 会因 Run 行不存在而抛错。
  */
-export async function deleteConversationDeep(conversationId: number, userId: number): Promise<boolean> {
+export async function deleteConversationDeep(
+  conversationId: number,
+  userId: number,
+): Promise<DeleteConversationResult> {
   const conversation = await findConversationForUser(conversationId, userId);
-  if (!conversation) return false;
+  if (!conversation) return "not_found";
+  if (await hasActiveRun(conversationId)) return "active_run";
+
   const runs = await prisma.agentRun.findMany({ where: { conversationId }, select: { id: true, taskId: true } });
   const runIds = runs.map((run) => run.id);
   const taskIds = runs.map((run) => run.taskId);
 
-  await prisma.$transaction([
+  const results = await prisma.$transaction([
     prisma.agentEvent.deleteMany({ where: { runId: { in: runIds } } }),
     prisma.agentToolCall.deleteMany({ where: { runId: { in: runIds } } }),
     prisma.task.deleteMany({ where: { id: { in: taskIds } } }),
-    // 放在最后：agent_messages / agent_runs 由外键 onDelete: Cascade 随会话一起清
-    prisma.agentConversation.delete({ where: { id: conversationId } }),
+    // 放在最后：agent_messages / agent_runs 由外键 onDelete: Cascade 随会话一起清。
+    // 用 deleteMany 而不是 delete：并发删除时 delete 会抛 P2025（被 handle 兜成 500），
+    // 而这里「会话已经没了」本就不是服务端错误。
+    prisma.agentConversation.deleteMany({ where: { id: conversationId } }),
   ]);
-  return true;
+
+  return results[3].count === 0 ? "not_found" : "deleted";
 }

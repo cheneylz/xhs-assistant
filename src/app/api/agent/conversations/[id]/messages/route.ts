@@ -1,13 +1,13 @@
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { ApiError, badRequest, notFound } from "@/lib/server/core/http-error";
-import { handle, readJson } from "@/lib/server/core/route";
+import { ApiError, notFound } from "@/lib/server/core/http-error";
+import { handle, parsePathId, readJson } from "@/lib/server/core/route";
 import {
   appendMessage,
   createRunForMessage,
+  DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
   findConversationForUser,
   hasActiveRun,
-  updateConversationStatus,
 } from "@/lib/server/services/agent-service";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -16,12 +16,6 @@ import { serializeConversation, serializeMessage, serializeRun } from "../../../
 const SendMessageSchema = z.object({
   content: z.string().min(1).max(4000),
 });
-
-function parseId(raw: string): number {
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) throw badRequest("会话 id 非法");
-  return value;
-}
 
 /**
  * POST /api/agent/conversations/[id]/messages 发消息 → 建 Run（P1 设计稿 §3.2 ①②）
@@ -35,7 +29,7 @@ function parseId(raw: string): number {
  */
 export const POST = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
-  const conversationId = parseId(params.id);
+  const conversationId = parsePathId(params.id, "会话 id");
   const conversation = await findConversationForUser(conversationId, user.id);
   if (!conversation) throw notFound("会话不存在");
 
@@ -48,13 +42,12 @@ export const POST = handle(async (req, { params }) => {
   }
 
   const message = await appendMessage({ conversationId, role: "user", content });
-  const run = await createRunForMessage({ conversationId, userId: user.id, messageId: message.id });
+  // 标题与「置 running」必须同一次写入落库（见 createRunForMessage 的注释）：
+  // 先建 Run 再补写标题，会让 worker 跑完后的 idle 被这次迟到写入盖回 running。
+  const title = conversation.title === DEFAULT_CONVERSATION_TITLE ? deriveConversationTitle(content) : undefined;
+  const run = await createRunForMessage({ conversationId, userId: user.id, messageId: message.id, title });
 
-  // 标题在首条消息时就派生（worker 结束时也会兜底派生一次，两处同源函数）。
-  // 立刻派生是为了左栏不必等一次运行结束才显示出可读的会话名。
-  if (conversation.title === "新任务") {
-    await updateConversationStatus({ conversationId, status: "running", title: deriveConversationTitle(content) });
-  }
+  // 回读一次拿最终状态：worker 若已跑完，这里读到的 idle 才是真实状态
   const fresh = await findConversationForUser(conversationId, user.id);
   if (!fresh) throw notFound("会话不存在");
 
