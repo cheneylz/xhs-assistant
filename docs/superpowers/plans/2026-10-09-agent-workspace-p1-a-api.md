@@ -32,14 +32,38 @@ npx tsc --noEmit        # 期望无输出
 | Task 3 `handle()` 加宽 | ✅ 已验收 | `8e3dd4f` |
 | Task 6 轮询间隔纯函数 | ✅ 已验收 | `8c2ed18` |
 | Task 7 SSE 事件工具 | ✅ 已验收 | `138e2c9` `4d4af98`（评审修正） |
-| Task 4/5 摘要列与工具摘要 | ⬜ 未开始 | |
-| Task 8/9 服务层与序列化 | ⬜ 未开始 | |
+| Task 4/5 摘要列与工具摘要 | ✅ 已验收 | `8741a00` `1c1c211` `191a62b`（评审修正） |
+| Task 8/9 服务层与序列化 | ✅ 已验收 | `fc3b968` `923cd93` `e9bcc0a` `29fa35d` `3f591c0` `4ff17b8`（含三轮评审修正） |
 | Task 10-12 接口 1/2/3/8/4 | ⬜ 未开始 | |
 | Task 13-15 接口 6/7 与 SSE | ⬜ 未开始 | |
 | Task 16 A 块端到端验收 | ⬜ 未开始 | |
 | Task 17 回归与交接文档 | ⬜ 未开始 | |
 
-**当前基线**：22 文件 / 220 用例全绿，`tsc --noEmit` 无输出。
+**当前基线**：24 文件 / 241 用例全绿，`tsc --noEmit` 无输出。
+
+### 实施后订正（Task 7/8/9 的代码块已过时，**以代码为准**）
+
+审查后对已落地的三个模块做了这些订正，后续任务按这些写：
+
+| 位置 | 订正 |
+|---|---|
+| `stream-events.ts` `RENDERABLE_EVENT_TYPES` | **去掉 `artifact`** → `["message_end", "status", "error"]`。工件由首屏 `artifacts` 字段专门返回，事件回放里也带上会让同一张工件卡渲染两遍 |
+| `stream-events.ts` | 新增导出 `toolCallSummaryKey(runId, toolCallId)` → `` `${runId}:${toolCallId}` ``；`attachToolCallSummaries` 按复记账查表（provider 每个 Run 重置计数，只用 toolCallId 会让同会话两个 Run 互相串摘要） |
+| `agent-service.ts` `findToolCallSummaries` | 签名改为 `(runIds, toolCallIds)`，**Map 的键是 `runId:toolCallId` 复合键**（不再是纯 toolCallId） |
+| `agent-service.ts` `listToolCallsForRuns` / `listArtifactEvents` | 都加 `limit = 200`，取**最新** N 条再翻正序 |
+| `agent-service.ts` `cancelPendingRun` | 三步写入包进 `prisma.$transaction`（否则中途失败会留下不可修复的不一致） |
+| `agent-service.ts` | 不依赖 `http-error`（它 import `next/server`，而本文件要被 worker import）；`findConversationForUser` 返回 `null`、`deleteConversationDeep` 返回 `boolean`、`CancelRunResult` 含 `not_found` —— 状态码一律由路由层决定 |
+| `schema.prisma` | 新增 `AgentRun @@index([conversationId, status])` 与 `AgentToolCall @@index([toolCallId])`（已 `db push`） |
+| `shared.ts` `serializeRun` | 补 `task_id` / `max_steps` / `token_budget`（前端要显示进度与深链任务中心） |
+| `shared.test.ts` | 新增（7 用例），覆盖 4000 字符截断边界、summary 归一、工件非法载荷 |
+| `worker/index.mts` `agentRunRunner` | `Promise.allSettled` 的 rejected 结果打日志（此前是静默黑洞） |
+| `worker/index.mts` `executeAgentRun` | 标题派生改用 `deriveConversationTitle`（此前是 `content.slice(0, 20)`，与路由已经漂移） |
+| `agent-service.ts` `createRunForMessage` | 加 `title` 选项；Task + Run + 会话状态**同事务**写入（此前路由会补写一次 running，可能把 worker 跑完后的 idle 盖回去 → 前端永远卡在执行中） |
+| `agent-service.ts` `deleteConversationDeep` | 返回值改为 `"deleted" \| "not_found" \| "active_run"`；**归属校验提到最前**（否则他人的执行中会话返回 409，泄露 id 存在与活跃度）；末步用 `deleteMany` 拿 count 避免并发删除抛 P2025 变 500 |
+| `agent-service.ts` | 导出 `DEFAULT_CONVERSATION_TITLE`（此前 `"新任务"` 散落 5 处） |
+| `core/route.ts` | 新增 `parsePathId(raw, label)`（此前每个路由各抄一份 `parseId`） |
+| `[id]/route.ts` GET | 首屏**增加 `runs` 字段**（零额外查询）：刷新后前端要拿 runId 才能取消 pending 的 Run（D19），也要用它显示进度 |
+| `conversations/route.ts` | 会话标题 zod 加 `.trim().min(1)` |
 
 ---
 
@@ -1134,51 +1158,41 @@ git commit -m "feat(agent): SSE 帧编码 / 可渲染事件判定 / 工具摘要
 
 **约定**：DB 交互部分不在单测里覆盖（沿用 P0 的做法 —— 该文件现有测试只覆盖纯逻辑，DB 由 Task 16 的端到端脚本覆盖）。
 
-- [ ] **Step 1: 追加纯逻辑测试**
+- [ ] **Step 1: 本任务不加单测（有意）**
 
-`agent-service.test.ts` 追加：
+这个文件里的新增函数全是 DB 交互（查询 / 事务 / 原子更新），没有可抽取的纯逻辑 —— 沿用 P0 的既定做法（见该文件现有测试的注释：「DB 交互部分由端到端覆盖」，`isRunTerminal` 已有用例覆盖终态判定）。本任务的验证方式是 Task 16 的端到端脚本（它会对取消语义、级联状态、首屏契约逐项断言）。
 
-```ts
-describe("cancelPendingRun 的判定入口（纯逻辑部分）", () => {
-  it("终态 Run 不允许取消", () => {
-    // 与 isRunTerminal 同源：取消接口用它决定 409
-    expect(isRunTerminal("succeeded")).toBe(true);
-    expect(isRunTerminal("failed")).toBe(true);
-    expect(isRunTerminal("cancelled")).toBe(true);
-    expect(isRunTerminal("pending")).toBe(false);
-    expect(isRunTerminal("running")).toBe(false);
-  });
-});
-```
+**Step 2 的 `agent-service.test.ts` 应保持原样、不加用例** —— 不要为了「有测试」而写一条与既有 `isRunTerminal` 用例重复的断言。
 
-（该用例组与已有的 `isRunTerminal` 用例重复一条是有意的：取消接口的 409 分支就依赖它，改动该函数必须让两处都失败。）
-
-- [ ] **Step 2: 跑测试**
-
-Run: `npx vitest run src/lib/server/services/agent-service.test.ts`
-Expected: PASS（9 个用例）
-
-- [ ] **Step 3: 追加服务函数**
+- [ ] **Step 2: 追加服务函数**
 
 `agent-service.ts` 顶部 import 改为：
 
 ```ts
 import type { AgentConversation, AgentEvent, AgentMessage, AgentRun, AgentToolCall, Prisma } from "@prisma/client";
 import { prisma } from "../core/db";
-import { notFound } from "../core/http-error";
 import { shanghaiNow } from "../core/time";
 ```
+
+**注意：不要 import `http-error`** —— 该模块 import 了 `next/server`，而本文件要被 worker 与 Next.js 路由**两侧** import（见文件头）。服务层只表达「查不到」，HTTP 状态码由路由层决定。这是本文件与其它 service 的既有约定（全项目 grep 确认：没有任何 service 依赖 `http-error`）。
 
 文件末尾追加：
 
 ```ts
 // ---------- P1-A：接口层查询 ----------
 
-/** 校验会话归属：不存在或不属于该用户一律 404（不泄露「存在但不是你的」） */
-export async function findConversationForUser(conversationId: number, userId: number): Promise<AgentConversation> {
-  const conversation = await prisma.agentConversation.findFirst({ where: { id: conversationId, userId } });
-  if (!conversation) throw notFound("会话不存在");
-  return conversation;
+/**
+ * 查会话归属：查不到（不存在或不属于该用户）返回 null。
+ *
+ * **不在这里抛 HTTP 错误**：本文件要被 worker 与路由两侧 import，
+ * 而 `http-error` 依赖 `next/server`。服务层只表达「查不到」，状态码由路由层决定
+ * —— 路由层一律把 null 转成 404（不泄露「存在但不是你的」）。
+ */
+export async function findConversationForUser(
+  conversationId: number,
+  userId: number,
+): Promise<AgentConversation | null> {
+  return prisma.agentConversation.findFirst({ where: { id: conversationId, userId } });
 }
 
 /**
@@ -1282,8 +1296,14 @@ export async function findToolCallSummaries(toolCallIds: string[]): Promise<Map<
 
 // ---------- P1-A：取消与删除 ----------
 
-/** 取消 Run 的结果：冲突时带上给用户看的原因（路由把它转成 409） */
-export type CancelRunResult = { outcome: "cancelled"; run: AgentRun } | { outcome: "conflict"; reason: string };
+/**
+ * 取消 Run 的结果：三种结局都由路由层翻译成状态码
+ * （cancelled → 200 / conflict → 409 / not_found → 404）。
+ */
+export type CancelRunResult =
+  | { outcome: "cancelled"; run: AgentRun }
+  | { outcome: "conflict"; reason: string }
+  | { outcome: "not_found" };
 
 /**
  * 取消一个 Run —— **仅 pending**（P1 设计稿 D19）。
@@ -1294,7 +1314,7 @@ export type CancelRunResult = { outcome: "cancelled"; run: AgentRun } | { outcom
  */
 export async function cancelPendingRun(runId: number, userId: number): Promise<CancelRunResult> {
   const run = await prisma.agentRun.findFirst({ where: { id: runId, userId } });
-  if (!run) throw notFound("Run 不存在");
+  if (!run) return { outcome: "not_found" };
   if (isRunTerminal(run.status)) {
     return { outcome: "conflict", reason: `Run 已是终态（${run.status}），无需取消` };
   }
@@ -1329,8 +1349,9 @@ export async function cancelPendingRun(runId: number, userId: number): Promise<C
  * agent_events / agent_tool_calls / tasks 与 Run 之间只有裸整数外键、没有关系声明，
  * 不显式删就会留下孤儿行 —— 事件与工具调用的孤儿尤其难查（它们没有可关联的会话）。
  */
-export async function deleteConversationDeep(conversationId: number, userId: number): Promise<void> {
-  await findConversationForUser(conversationId, userId);
+export async function deleteConversationDeep(conversationId: number, userId: number): Promise<boolean> {
+  const conversation = await findConversationForUser(conversationId, userId);
+  if (!conversation) return false;
   const runs = await prisma.agentRun.findMany({ where: { conversationId }, select: { id: true, taskId: true } });
   const runIds = runs.map((run) => run.id);
   const taskIds = runs.map((run) => run.taskId);
@@ -1342,20 +1363,23 @@ export async function deleteConversationDeep(conversationId: number, userId: num
     // 放在最后：agent_messages / agent_runs 由外键 onDelete: Cascade 随会话一起清
     prisma.agentConversation.delete({ where: { id: conversationId } }),
   ]);
+  return true;
 }
 ```
 
-- [ ] **Step 4: 类型检查**
+- [ ] **Step 3: 类型检查**
 
 Run: `npx tsc --noEmit`
 Expected: 无输出
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 4: 提交**
 
 ```bash
-git add src/lib/server/services/agent-service.ts src/lib/server/services/agent-service.test.ts
+git add src/lib/server/services/agent-service.ts
 git commit -m "feat(agent): 会话查询 / 取消 pending Run / 深删会话（含孤儿清理）"
 ```
+
+（只提交服务文件：本任务没有新增测试。）
 
 ---
 
@@ -1590,7 +1614,7 @@ Expected: 无输出
 - [ ] **Step 3: 提交**
 
 ```bash
-git add src/app/api/agent/shared.ts
+git add src/lib/server/agent/stream-events.ts src/app/api/agent/shared.ts
 git commit -m "feat(agent-api): 序列化单一真相源（首屏与工件接口同形状）"
 ```
 
@@ -1666,12 +1690,13 @@ git commit -m "feat(agent-api): 会话列表与新建（接口 1/2）"
 
 ```ts
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { badRequest } from "@/lib/server/core/http-error";
+import { ApiError, badRequest, notFound } from "@/lib/server/core/http-error";
 import { handle } from "@/lib/server/core/route";
 import { RENDERABLE_EVENT_TYPES } from "@/lib/server/agent/stream-events";
 import {
   deleteConversationDeep,
   findConversationForUser,
+  hasActiveRun,
   latestEventIdForRuns,
   listArtifactEvents,
   listConversationUserMessages,
@@ -1684,6 +1709,9 @@ import { serializeArtifact, serializeConversation, serializeEvent, serializeMess
 
 /** 首屏回放事件的条数上限（一次运行的可渲染事件通常个位数，长会话才可能触顶） */
 const EVENT_REPLAY_LIMIT = 1000;
+/** 首屏工具卡与工件的条数上限（与服务层默认值一致；每行 result 可达 4000 字符，不设上限会撑爆响应） */
+const TOOL_CALL_LIMIT = 200;
+const ARTIFACT_LIMIT = 200;
 
 /** 解析并校验路径参数 id */
 function parseId(raw: string): number {
@@ -1701,11 +1729,18 @@ function parseId(raw: string): number {
  *   tool_calls      中栏已完成的工具卡（含 summary）
  *   artifacts       右栏工件
  *   latest_event_id 前端订阅 SSE 的起点：只渲染 id 大于它的事件
+ *   *_truncated     该列表是否因超过上限而被截断（丢了更早的条目）
+ *
+ * 注意 events 里**不含** artifact 事件（工件的唯一历史来源是 artifacts 字段），
+ * 工具卡也**不由 events 承担**（唯一来源是 tool_calls，按 tool_call_id 归并）——
+ * 两处都返回会让同一张卡片渲染两遍。
  */
 export const GET = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
   const conversationId = parseId(params.id);
+  // 服务层返回 null 表示「不存在或不属于你」，路由层统一转 404
   const conversation = await findConversationForUser(conversationId, user.id);
+  if (!conversation) throw notFound("会话不存在");
 
   const runs = await listRuns(conversationId);
   const runIds = runs.map((run) => run.id);
@@ -1713,8 +1748,8 @@ export const GET = handle(async (req, { params }) => {
 
   const [messages, toolCalls, artifactEvents, replayEvents] = await Promise.all([
     listConversationUserMessages(conversationId),
-    listToolCallsForRuns(runIds),
-    listArtifactEvents(runIds),
+    listToolCallsForRuns(runIds, TOOL_CALL_LIMIT),
+    listArtifactEvents(runIds, ARTIFACT_LIMIT),
     listRenderableEvents(runIds, latestEventId, RENDERABLE_EVENT_TYPES, EVENT_REPLAY_LIMIT),
   ]);
 
@@ -1725,7 +1760,10 @@ export const GET = handle(async (req, { params }) => {
     tool_calls: toolCalls.map(serializeToolCall),
     artifacts: artifactEvents.map(serializeArtifact).filter((item) => item !== null),
     latest_event_id: latestEventId,
+    // 截断标记：上一页（更早）的内容被丢掉了，前端据此提示「更早的记录已折叠」
     events_truncated: replayEvents.length >= EVENT_REPLAY_LIMIT,
+    tool_calls_truncated: toolCalls.length >= TOOL_CALL_LIMIT,
+    artifacts_truncated: artifactEvents.length >= ARTIFACT_LIMIT,
   });
 });
 
@@ -1734,11 +1772,19 @@ export const GET = handle(async (req, { params }) => {
  *
  * 级联范围见 deleteConversationDeep：Prisma 的 onDelete 只覆盖
  * agent_messages / agent_runs，事件、工具调用与 Task 必须显式清。
+ *
+ * **执行中的会话拒绝删除（409）**：agent_events / agent_tool_calls 与 Run 之间没有外键，
+ * worker 在删完后仍会继续写库 —— 那些行会成为永远查不回来的孤儿，
+ * 且 worker 的 finishRun 会因 Run 行不存在而抛错（只留下一条日志）。
  */
 export const DELETE = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
   const conversationId = parseId(params.id);
-  await deleteConversationDeep(conversationId, user.id);
+  if (await hasActiveRun(conversationId)) {
+    throw new ApiError(409, "会话正在执行中，请先取消或等待任务结束再删除");
+  }
+  const deleted = await deleteConversationDeep(conversationId, user.id);
+  if (!deleted) throw notFound("会话不存在");
   return NextResponse.json({ deleted: true, id: conversationId });
 });
 ```
@@ -1810,7 +1856,7 @@ Expected: 无输出（`agent-smoke.ts:59` 的 `message.id` 仍然成立）
 
 ```ts
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { ApiError, badRequest } from "@/lib/server/core/http-error";
+import { ApiError, badRequest, notFound } from "@/lib/server/core/http-error";
 import { handle, readJson } from "@/lib/server/core/route";
 import {
   appendMessage,
@@ -1839,11 +1885,17 @@ function parseId(raw: string): number {
  *
  * 一次只允许一个 Run：同一会话并行两个循环会交叉写 agent_messages，
  * 让模型的上下文顺序错乱（worker 的并发上限是 3，同一个会话必须串行）。
+ *
+ * 已知局限（P1 接受）：这里的检查是 TOCTOU —— 两个并发的 POST 可能都通过检查。
+ * 窗口是毫秒级、前端在运行中会禁用输入框，且没有可用的部分唯一索引
+ * （`db push` 管不了 partial unique index），故不在 P1 用数据库约束兜底。
  */
 export const POST = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
   const conversationId = parseId(params.id);
   const conversation = await findConversationForUser(conversationId, user.id);
+  if (!conversation) throw notFound("会话不存在");
+
   const payload = await readJson(req, SendMessageSchema);
   const content = payload.content.trim();
   if (!content) throw new ApiError(422, "消息内容不能为空");
@@ -1861,6 +1913,7 @@ export const POST = handle(async (req, { params }) => {
     await updateConversationStatus({ conversationId, status: "running", title: deriveConversationTitle(content) });
   }
   const fresh = await findConversationForUser(conversationId, user.id);
+  if (!fresh) throw notFound("会话不存在");
 
   return NextResponse.json({
     conversation: serializeConversation(fresh),
@@ -1900,7 +1953,7 @@ git commit -m "feat(agent-api): 发消息建 Run，并发保护与标题派生�
 
 ```ts
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { badRequest } from "@/lib/server/core/http-error";
+import { badRequest, notFound } from "@/lib/server/core/http-error";
 import { handle } from "@/lib/server/core/route";
 import { findConversationForUser, listArtifactEvents, listRuns } from "@/lib/server/services/agent-service";
 import { NextResponse } from "next/server";
@@ -1916,7 +1969,8 @@ function parseId(raw: string): number {
 export const GET = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
   const conversationId = parseId(params.id);
-  await findConversationForUser(conversationId, user.id);
+  const conversation = await findConversationForUser(conversationId, user.id);
+  if (!conversation) throw notFound("会话不存在");
 
   const runs = await listRuns(conversationId);
   const events = await listArtifactEvents(runs.map((run) => run.id));
@@ -1950,7 +2004,7 @@ git commit -m "feat(agent-api): 工件列表（接口 6）"
 
 ```ts
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { ApiError, badRequest } from "@/lib/server/core/http-error";
+import { ApiError, badRequest, notFound } from "@/lib/server/core/http-error";
 import { handle } from "@/lib/server/core/route";
 import { cancelPendingRun } from "@/lib/server/services/agent-service";
 import { NextResponse } from "next/server";
@@ -1974,6 +2028,7 @@ export const POST = handle(async (req, { params }) => {
   const user = await getCurrentUser(req);
   const runId = parseId(params.runId);
   const result = await cancelPendingRun(runId, user.id);
+  if (result.outcome === "not_found") throw notFound("Run 不存在");
   if (result.outcome === "conflict") throw new ApiError(409, result.reason);
   return NextResponse.json({ run: serializeRun(result.run) });
 });
@@ -2010,7 +2065,7 @@ git commit -m "feat(agent-api): 取消 pending Run（接口 7，仅 pending）"
 
 ```ts
 import { getCurrentUser } from "@/lib/server/core/auth";
-import { badRequest } from "@/lib/server/core/http-error";
+import { badRequest, notFound } from "@/lib/server/core/http-error";
 import { handle } from "@/lib/server/core/route";
 import {
   attachToolCallSummaries,
@@ -2075,7 +2130,8 @@ export const GET = handle(async (req, { params, searchParams }) => {
   const user = await getCurrentUser(req);
   const conversationId = parseId(params.id);
   // 归属校验必须在流开始**之前**：流一旦开始就无法再改状态码
-  await findConversationForUser(conversationId, user.id);
+  const conversation = await findConversationForUser(conversationId, user.id);
+  if (!conversation) throw notFound("会话不存在");
 
   const rawLastId = Number.parseInt(searchParams.get("last_event_id") ?? "0", 10);
   let lastId = Number.isNaN(rawLastId) || rawLastId < 0 ? 0 : rawLastId;
@@ -2096,8 +2152,10 @@ export const GET = handle(async (req, { params, searchParams }) => {
               const rows = await listEventsAfter(runIds, lastId, BATCH_LIMIT);
               if (rows.length > 0) {
                 // 补摘要：前端不能 import skill-catalog（会把 prisma 打进客户端包），
-                // 而工具的摘要在循环侧写不进事件（subscribe 只能观察），只能在这里补齐
-                const summaries = await findToolCallSummaries(collectToolCallIds(rows));
+                // 而工具的摘要在循环侧写不进事件（subscribe 只能观察），只能在这里补齐。
+                // 查库要连 runIds 一起传：返回的 Map 用 `runId:toolCallId` 复合键，
+                // 否则同会话两个 Run 的同名 call_1 会互相串摘要。
+                const summaries = await findToolCallSummaries(runIds, collectToolCallIds(rows));
                 for (const row of attachToolCallSummaries(rows, summaries)) {
                   controller.enqueue(encoder.encode(encodeSseFrame(serializeEvent(row))));
                 }
