@@ -18,8 +18,22 @@ import { makeUsageLogger } from "../services/usage-service";
 /** 工件类型：驱动 Agent 工作台的右栏工件面板渲染 */
 export type ArtifactKind = "draft" | "topic" | "image" | "review" | "report" | "script";
 
+/** 产出物声明：把工具返回值映射为工件面板条目 */
+export interface ArtifactSpec {
+  kind: ArtifactKind;
+  /** 产出物 id 所在字段名；该字段是数组时表示一次产出多个工件 */
+  idField: string;
+  /** 标题字段名（数组产出按索引对应；单产出取首项） */
+  titleField?: string;
+  /** 跳转链接前缀，拼接 id 得到 href */
+  hrefPrefix: string;
+}
+
+/** 运行时枚举：护栏分级的单一真相源 */
+export const SKILL_RISK_LEVELS = ["read", "write", "publish"] as const;
+
 /** 技能护栏分级：read 直接执行 / write 直接执行但产出待验收 / publish 需人工确认 */
-export type SkillRiskLevel = "read" | "write" | "publish";
+export type SkillRiskLevel = (typeof SKILL_RISK_LEVELS)[number];
 
 // ---------- 技能目录（S-03 技能注册表种子数据）----------
 // 技能采用标准 Agent SKILL 格式：元数据（name/description）+ instructions（Markdown 指令正文），
@@ -32,10 +46,10 @@ export interface SkillDefinition {
   paramsSchema: Record<string, unknown>;
   /** SKILL.md 风格指令正文（Markdown，含 frontmatter） */
   instructions: string;
-  /** 护栏分级（新增） */
+  /** 护栏分级：read 直接执行 / write 产出待验收 / publish 需人工确认 */
   riskLevel: SkillRiskLevel;
-  /** 产出物类型，驱动工件面板（新增） */
-  produces?: ArtifactKind[];
+  /** 产出物声明，驱动工件面板 */
+  artifact?: ArtifactSpec;
 }
 
 export const SKILL_CATALOG: SkillDefinition[] = [
@@ -60,7 +74,8 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
 ## 输出
 
 返回本次采集收录的话题数量（collected）。`,
-    riskLevel: "read",
+    // 注意：热点采集会写库（hotTopic.createMany + deleteMany 清上一批），故为 write 而非 read
+    riskLevel: "write",
   },
   {
     skillKey: "topic.generate",
@@ -84,7 +99,13 @@ description: 基于账号知识库、实时热点与爆款拆解结构，生成�
 
 返回选题 ID 列表（suggestion_ids）、标题列表（titles）与生成数量（count）。`,
     riskLevel: "write",
-    produces: ["topic"],
+    // 多产出：suggestion_ids 与 titles 都是数组，按索引对应
+    artifact: {
+      kind: "topic",
+      idField: "suggestion_ids",
+      titleField: "titles",
+      hrefPrefix: "/platforms/xhs/planner?id=",
+    },
   },
   {
     skillKey: "content.notePack",
@@ -108,7 +129,12 @@ description: 围绕选题生成标题备选、正文、话题标签与行动引�
 
 返回草稿 ID（draft_id）、标题备选（titles）与标签（tags）。`,
     riskLevel: "write",
-    produces: ["draft"],
+    artifact: {
+      kind: "draft",
+      idField: "draft_id",
+      titleField: "titles",
+      hrefPrefix: "/platforms/xhs/drafts?id=",
+    },
   },
   {
     skillKey: "review.submit",
@@ -132,7 +158,11 @@ description: 对草稿执行合规规则检测与三道门禁审校
 
 返回审校工单 ID（review_id）、门禁状态（gate_status）与状态（status）。`,
     riskLevel: "write",
-    produces: ["review"],
+    artifact: {
+      kind: "review",
+      idField: "review_id",
+      hrefPrefix: "/platforms/xhs/review?id=",
+    },
   },
   {
     skillKey: "script.generate",
@@ -155,8 +185,8 @@ description: 将图文草稿转化为 30-60 秒口播分镜脚本
 ## 输出
 
 返回分镜脚本文本（script）。`,
-    riskLevel: "write",
-    produces: ["script"],
+    // generateVideoScript 无任何 prisma 调用（只读草稿 + 调 LLM），故为 read 而非 write
+    riskLevel: "read",
   },
   {
     skillKey: "schedule.recommend",
@@ -179,7 +209,8 @@ description: 基于历史发布数据与平台活跃规律，推荐未来 3 天�
 ## 输出
 
 返回推荐时间槽位（slots）与推荐理由（reason）。`,
-    riskLevel: "write",
+    // recommendSchedules 仅 findFirst/findMany，无写入，故为 read
+    riskLevel: "read",
   },
 ];
 
