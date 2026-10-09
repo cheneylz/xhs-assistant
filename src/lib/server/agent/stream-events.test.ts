@@ -10,6 +10,7 @@ import {
   collectToolCallIds,
   encodeSseFrame,
   isRenderableEvent,
+  toolCallSummaryKey,
 } from "./stream-events";
 
 /** 造一条事件行（结构对齐 Prisma 的 agentEvent.findMany 返回值） */
@@ -64,7 +65,10 @@ describe("collectToolCallIds / attachToolCallSummaries（摘要补齐）", () =>
   it("给 tool_execution_end 补上 summary，其余事件原样返回", () => {
     const event = row("tool_execution_end", { toolCallId: "call-1", isError: false });
     const other = row("message_end", { toolCallId: "call-1" }, 2);
-    const [patched, untouched] = attachToolCallSummaries([event, other], new Map([["call-1", "收录 87 条热点"]]));
+    const [patched, untouched] = attachToolCallSummaries(
+      [event, other],
+      new Map([[toolCallSummaryKey(10, "call-1"), "收录 87 条热点"]]),
+    );
 
     expect((patched.payload as Record<string, unknown>).summary).toBe("收录 87 条热点");
     expect((patched.payload as Record<string, unknown>).isError).toBe(false);
@@ -73,7 +77,7 @@ describe("collectToolCallIds / attachToolCallSummaries（摘要补齐）", () =>
 
   it("不改写入参行（Pull 事件是 Prisma 返回对象，就地改会污染后续使用者）", () => {
     const event = row("tool_execution_end", { toolCallId: "call-1" });
-    attachToolCallSummaries([event], new Map([["call-1", "摘要"]]));
+    attachToolCallSummaries([event], new Map([[toolCallSummaryKey(10, "call-1"), "摘要"]]));
     expect((event.payload as Record<string, unknown>).summary).toBeUndefined();
   });
 
@@ -85,7 +89,7 @@ describe("collectToolCallIds / attachToolCallSummaries（摘要补齐）", () =>
       row("tool_execution_end", "标量", 4),
       row("tool_execution_end", { toolCallId: 123 }, 5),
     ];
-    const patched = attachToolCallSummaries(rows, new Map([["call-1", "摘要"]]));
+    const patched = attachToolCallSummaries(rows, new Map([[toolCallSummaryKey(10, "call-1"), "摘要"]]));
 
     expect(patched).toHaveLength(5);
     // 没被补摘要的行必须按引用原样返回（不产生新对象，也不抛错）
@@ -99,6 +103,23 @@ describe("collectToolCallIds / attachToolCallSummaries（摘要补齐）", () =>
 
   it("摘要为空串时按「没有摘要」处理，行原样返回", () => {
     const rows = [row("tool_execution_end", { toolCallId: "call-1" })];
-    expect(attachToolCallSummaries(rows, new Map([["call-1", ""]]))[0]).toBe(rows[0]);
+    expect(attachToolCallSummaries(rows, new Map([[toolCallSummaryKey(10, "call-1"), ""]]))[0]).toBe(rows[0]);
+  });
+
+  it("toolCallSummaryKey 把 Run 与 toolCallId 拼成复合键", () => {
+    expect(toolCallSummaryKey(12, "call_1")).toBe("12:call_1");
+  });
+
+  it("同会话两个 Run 出现同名 toolCallId 时不互相串摘要（provider 每个 Run 重置计数）", () => {
+    const runA = { ...row("tool_execution_end", { toolCallId: "call_1" }, 1), runId: 10 };
+    const runB = { ...row("tool_execution_end", { toolCallId: "call_1" }, 2), runId: 11 };
+    const summaries = new Map([
+      [toolCallSummaryKey(10, "call_1"), "A 的摘要"],
+      [toolCallSummaryKey(11, "call_1"), "B 的摘要"],
+    ]);
+
+    const [patchedA, patchedB] = attachToolCallSummaries([runA, runB], summaries);
+    expect((patchedA.payload as Record<string, unknown>).summary).toBe("A 的摘要");
+    expect((patchedB.payload as Record<string, unknown>).summary).toBe("B 的摘要");
   });
 });

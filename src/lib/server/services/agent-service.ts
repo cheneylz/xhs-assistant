@@ -398,11 +398,14 @@ export async function listEventsAfter(runIds: number[], afterId: number, limit: 
 }
 
 /**
- * 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用，key 是 toolCallId）。
+ * 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用）。
  *
- * **必须按 runIds 圈定范围**：agent_tool_calls 对 tool_call_id 没有唯一约束，
- * 而很多 provider 会给出可预测的 id（call_1 / call_2 …）。不圈范围的话，
- * 别的会话（甚至别的用户）的同名 toolCallId 会把它的摘要盖到本次事件上。
+ * **键是 `runId:toolCallId` 复合键**（与 stream-events 的 toolCallSummaryKey 同格式）：
+ * agent_tool_calls 对 tool_call_id 没有唯一约束，provider 又常按 Run 重置计数
+ * （每个 Run 都有 call_1），只用 toolCallId 做键会让同会话的两个 Run 互相串摘要。
+ *
+ * where 用 `runId IN (...)` + `toolCallId IN (...)` 的交集过滤即可 —— 结果可能是
+ * 我们没问过的组合的超集，但键里带了 runId，查表时不会错配。
  */
 export async function findToolCallSummaries(
   runIds: number[],
@@ -411,11 +414,12 @@ export async function findToolCallSummaries(
   if (runIds.length === 0 || toolCallIds.length === 0) return new Map();
   const rows = await prisma.agentToolCall.findMany({
     where: { runId: { in: runIds }, toolCallId: { in: toolCallIds }, summary: { not: null } },
-    select: { toolCallId: true, summary: true },
+    select: { runId: true, toolCallId: true, summary: true },
   });
   const map = new Map<string, string>();
   for (const row of rows) {
-    if (row.summary) map.set(row.toolCallId, row.summary);
+    if (!row.summary) continue;
+    map.set(`${row.runId}:${row.toolCallId}`, row.summary);
   }
   return map;
 }

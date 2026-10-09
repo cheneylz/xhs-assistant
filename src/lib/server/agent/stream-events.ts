@@ -73,6 +73,18 @@ export function toPayloadRecord(payload: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * 定位一次工具调用的键：`runId:toolCallId`。
+ *
+ * **不能只用 toolCallId**：provider 通常每个 Run 重置调用计数（每个 Run 都有 call_1），
+ * 而一次 SSE 批次可能同时含同一会话里两个 Run 的 tool_execution_end 事件 ——
+ * 只用 toolCallId 做键，会让一个 Run 的事件被盖上另一个 Run 的摘要。
+ * 摘要的落库查询与事件侧的补齐必须用同一个键格式，因此在这里集中定义。
+ */
+export function toolCallSummaryKey(runId: number, toolCallId: string): string {
+  return `${runId}:${toolCallId}`;
+}
+
 /** 从一批事件里挑出需要补摘要的 toolCallId（去重） */
 export function collectToolCallIds(rows: Array<{ type: string; payload: unknown }>): string[] {
   const ids = new Set<string>();
@@ -96,6 +108,9 @@ export function collectToolCallIds(rows: Array<{ type: string; payload: unknown 
  * 因此事件行存在时摘要一定已经提交（P1 设计稿 §4.3 的落地细节）。
  * 被护栏阻断的调用不走 afterToolCall（Pi 直接构造错误结果），它的摘要由 beforeToolCall
  * 写入 —— 同样在 tool_execution_end 发出之前 await 完成，因此这个时序保证对两类路径都成立。
+ *
+ * summaries 的键是 `runId:toolCallId` 复合键（构造见 toolCallSummaryKey）：同一会话里
+ * 先后两个 Run 会有同名的 call_1，只用 toolCallId 查表会把摘要串到另一个 Run 的事件上。
  */
 export function attachToolCallSummaries<T extends AgentEventRowLike>(
   rows: T[],
@@ -107,7 +122,7 @@ export function attachToolCallSummaries<T extends AgentEventRowLike>(
     const payload = toPayloadRecord(row.payload);
     const toolCallId = payload.toolCallId;
     if (typeof toolCallId !== "string") return row;
-    const summary = summaries.get(toolCallId);
+    const summary = summaries.get(toolCallSummaryKey(row.runId, toolCallId));
     // 空串按「没有摘要」处理：与 findToolCallSummaries 的过滤口径一致（那边同样丢弃空值）
     if (!summary) return row;
     // 不就地改：rows 是 Prisma 返回对象，就地改会污染调用方的数据
