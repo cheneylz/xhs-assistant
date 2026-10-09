@@ -3,9 +3,8 @@
  * 覆盖：ModelConfigLike → pi-ai Model 字段映射
  */
 import { describe, expect, it } from "vitest";
-// @ts-ignore TS5097：tsc 对带 .mts 后缀的导入要求全局开启 allowImportingTsExtensions；
-// 但 .mts 后缀是运行时的硬性要求（Pi 包 ESM-only，须按 ESM 加载该文件），
-// 且 vitest/Vite 能正常解析带后缀的导入，故此处局部忽略该静态检查，不为一个测试改动全项目 tsconfig。
+// 必须显式带 .mts 后缀：Pi 包 ESM-only，tsx/Node ESM 不做扩展名推断。
+// tsconfig 已开启 allowImportingTsExtensions 并纳入 **/*.mts，无需忽略静态检查。
 import { buildPiModel } from "./model-bridge.mts";
 
 const cfg = {
