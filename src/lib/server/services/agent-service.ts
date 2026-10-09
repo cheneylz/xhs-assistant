@@ -5,6 +5,7 @@
  * 【本文件不含 Pi 依赖】—— 可被 Next.js API 路由与 worker 两侧安全 import。
  */
 import type { AgentConversation, AgentEvent, AgentMessage, AgentRun, AgentToolCall, Prisma } from "@prisma/client";
+import { toolCallSummaryKey } from "../agent/stream-events";
 import { prisma } from "../core/db";
 import { shanghaiNow } from "../core/time";
 
@@ -400,7 +401,7 @@ export async function listEventsAfter(runIds: number[], afterId: number, limit: 
 /**
  * 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用）。
  *
- * **键是 `runId:toolCallId` 复合键**（与 stream-events 的 toolCallSummaryKey 同格式）：
+ * **键是 `runId:toolCallId` 复合键，由 `toolCallSummaryKey` 统一构造**（单一真相源，避免两处格式漂移）：
  * agent_tool_calls 对 tool_call_id 没有唯一约束，provider 又常按 Run 重置计数
  * （每个 Run 都有 call_1），只用 toolCallId 做键会让同会话的两个 Run 互相串摘要。
  *
@@ -419,7 +420,7 @@ export async function findToolCallSummaries(
   const map = new Map<string, string>();
   for (const row of rows) {
     if (!row.summary) continue;
-    map.set(`${row.runId}:${row.toolCallId}`, row.summary);
+    map.set(toolCallSummaryKey(row.runId, row.toolCallId), row.summary);
   }
   return map;
 }
