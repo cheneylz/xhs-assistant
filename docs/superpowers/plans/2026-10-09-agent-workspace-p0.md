@@ -12,12 +12,48 @@
 
 ---
 
-## 与设计文档的两处偏差（已核实，以本计划为准）
+## Task 0 实测后的架构调整（必读，影响 5 个文件命名）
+
+**Task 0 已执行完毕，R1 实测失败并已定位根因，方案据此调整。**
+
+### `.mts` 后缀规则（决策 D17）
+
+Pi 包的 `exports` 映射**只声明 `types` + `import` 条件，无 `require`、无 `default`**。tsx 默认把 `.ts` 转成 CJS，导致**模块解析阶段**就失败（`ERR_PACKAGE_PATH_NOT_EXPORTED`），走不到 `require(esm)` 互操作。
+
+**因此：凡是直接或间接 `import "@earendil-works/pi-*"` 的文件，一律使用 `.mts` 后缀**，让 tsx 按 ESM 加载。
+
+| 文件 | 后缀 | 原因 |
+|---|---|---|
+| `src/worker/index.mts` | **.mts** | 入口，import agent-loop |
+| `src/lib/server/agent/agent-loop.mts` | **.mts** | import Pi |
+| `src/lib/server/agent/tool-registry.mts` | **.mts** | import Pi |
+| `src/lib/server/agent/model-bridge.mts` | **.mts** | import Pi |
+| `src/lib/server/agent/types.mts` | **.mts** | import Pi（声明合并）|
+| `skill-catalog.ts` / `tool-schemas.ts` / `context.ts` / `guards.ts` / `persist.ts` | `.ts` | 无 Pi 依赖，保持 CJS |
+| 所有 `*.test.ts` | `.ts` | vitest 走 vite 解析，不经 tsx |
+
+`package.json` 的 worker 脚本改为：`"worker": "tsx src/worker/index.mts"`
+
+**⚠️ 待验证（Task 0 遗留）**：`.mts` 入口 import 无 Pi 依赖的 `.ts` 模块（ESM → CJS 互操作），以及 vitest 能否跑 import `.mts` 的测试。Task 1 之前必须先验证这两点，否则任务 7/10/11 会连环卡住。
+
+### 其余实测修正
+
+| 项 | 修正 |
+|---|---|
+| `ModelCost` 需 **4 个字段**：`input` / `output` / `cacheRead` / `cacheWrite` | Task 4 的 `buildPiModel` 必须补全，否则 `tsc --noEmit` 失败 |
+| `TranscriptContext` 是带品牌类型，官方称只能由 `normalizeContext()` 产出 | Task 10 不能用 `as never` 蒙混；`normalizeContext` 未在包根再导出，需先定位 |
+| `UserMessage` 要求 `timestamp` 字段 | 构造消息勿遗漏 |
+| `ModelConfig.provider` 是自由文本，默认 `"openai-compatible"`，不匹配 pi-ai 已知 provider ID | compat 探测实际只靠 `baseUrl` 子串；provider 差异（如 DeepSeek 的 `max_tokens`）不会自动生效。Task 4 考虑显式 provider → compat 映射 |
+| 设计文档 §11.1 原写的 R1 缓解手段「Node 24 require(esm) 默认支持」**不成立** | 已订正设计文档 §11.1.1 |
+
+---
+
+## 与设计文档的其他偏差（已核实，以本计划为准）
 
 | 设计文档原文 | 实际情况 | 本计划采用 |
 |---|---|---|
 | §10/§15.2：测试放 `tests/agent-*.test.ts` | vitest 配置 `include: ["src/**/*.test.ts"]`，`tests/` 目录**不被收集**（该目录下 4 个文件目前处于失效状态）| 测试与源码同目录，放 `src/lib/server/agent/*.test.ts` |
-| §8.4：依赖只需 2 个包 | `tool-registry.ts` 会直接 `import { Type } from "typebox"`，而 typebox 只是 `pi-agent-core` 的传递依赖 | 显式声明 `typebox@1.3.27` 为直接依赖 |
+| §8.4：依赖只需 2 个包 | `tool-registry.mts` 会直接 `import { Type } from "typebox"`，而 typebox 只是 `pi-agent-core` 的传递依赖 | 显式声明 `typebox@1.3.27` 为直接依赖 |
 
 ---
 
@@ -36,23 +72,23 @@
 
 ## 文件结构
 
-| 文件 | 职责 | 含 Pi 依赖 |
-|---|---|---|
-| `src/lib/server/agent/skill-catalog.ts` | `SkillDefinition` / `SKILL_CATALOG` / `SkillContext` / `executeSkill`（从 workflow-service 抽出）| ❌ |
-| `src/lib/server/agent/tool-schemas.ts` | skillKey → TypeBox schema 映射 + 完整性断言 | ❌ |
-| `src/lib/server/agent/model-bridge.ts` | `ModelConfigLike` → `pi-ai` `Model<"openai-completions">` | ✅ |
-| `src/lib/server/agent/guards.ts` | `riskLevel` 护栏（`beforeToolCall` 实现）| ❌ |
-| `src/lib/server/agent/context.ts` | 字符预算裁剪 + 工具结果摘要 | ❌ |
-| `src/lib/server/agent/tool-registry.ts` | `executeSkill` → `AgentTool` 包装 | ✅ |
-| `src/lib/server/agent/persist.ts` | `AgentEvent` / `AgentToolCall` 落库 | ❌ |
-| `src/lib/server/agent/types.ts` | `CustomAgentMessages` 声明合并 | ✅ |
-| `src/lib/server/agent/agent-loop.ts` | `Agent` 装配 + 单次 Run 驱动 | ✅ |
-| `src/lib/server/services/agent-service.ts` | 会话/消息/Run 的 CRUD + 任务领取 | ❌ |
-| `src/prompts/agent.md` | Agent system prompt 模板 | — |
-| `src/worker/index.ts` | 新增 `agent_run_runner` + 崩溃清扫 | — |
-| `src/scripts/agent-smoke.ts` | P0 端到端验收脚本 | — |
+| 文件 | 职责 | 含 Pi 依赖 | 后缀 |
+|---|---|---|---|
+| `src/lib/server/agent/skill-catalog.ts` | `SkillDefinition` / `SKILL_CATALOG` / `SkillContext` / `executeSkill`（从 workflow-service 抽出）| ❌ | `.ts` |
+| `src/lib/server/agent/tool-schemas.ts` | skillKey → TypeBox schema 映射 + 完整性断言 | ❌ | `.ts` |
+| `src/lib/server/agent/guards.ts` | `riskLevel` 护栏（`beforeToolCall` 实现）| ❌ | `.ts` |
+| `src/lib/server/agent/context.ts` | 字符预算裁剪 + 工具结果摘要 | ❌ | `.ts` |
+| `src/lib/server/agent/persist.ts` | `AgentEvent` / `AgentToolCall` 落库 | ❌ | `.ts` |
+| `src/lib/server/services/agent-service.ts` | 会话/消息/Run 的 CRUD + 任务领取 | ❌ | `.ts` |
+| `src/lib/server/agent/model-bridge.mts` | `ModelConfigLike` → `pi-ai` `Model<"openai-completions">` | ✅ | **`.mts`** |
+| `src/lib/server/agent/tool-registry.mts` | `executeSkill` → `AgentTool` 包装 | ✅ | **`.mts`** |
+| `src/lib/server/agent/types.mts` | `CustomAgentMessages` 声明合并 | ✅ | **`.mts`** |
+| `src/lib/server/agent/agent-loop.mts` | `Agent` 装配 + 单次 Run 驱动 | ✅ | **`.mts`** |
+| `src/prompts/agent.md` | Agent system prompt 模板 | — | — |
+| `src/worker/index.mts` | 新增 `agent_run_runner` + 崩溃清扫 | — | **`.mts`** |
+| `src/scripts/agent-smoke.mts` | P0 端到端验收脚本 | — | **`.mts`** |
 
-**边界铁律**：只有 `model-bridge.ts` / `tool-registry.ts` / `types.ts` / `agent-loop.ts` 四个文件可以 `import "@earendil-works/pi-*"`。其余文件必须保持无 Pi 依赖，以便被 Next.js 侧安全 import。
+**边界铁律**：只有 `model-bridge.mts` / `tool-registry.mts` / `types.mts` / `agent-loop.mts` 四个文件可以 `import "@earendil-works/pi-*"`，且都必须是 `.mts`（见上方 D17）。其余文件保持无 Pi 依赖的 `.ts`，以便被 Next.js 侧安全 import。
 
 ---
 

@@ -51,6 +51,7 @@ xhs-assistant 当前已是具备完整运营能力的平台：148 个 REST 路�
 | D14 | 同会话并发 | **Pi 的 `followUp()` 排队语义** | 执行中再发消息则排队，优于 409 拒绝 |
 | D15 | worker 唤醒 | **3 秒轮询** | Agent 任务本身耗时 30s+，3s 延迟可忽略，不引入 NOTIFY |
 | D16 | docs 目录 | **本次建立** | `docs/` 作为总代码文档落点，本设计文档放 `docs/superpowers/specs/` |
+| D17 | ESM 兼容方案 | **改用 `.mts` 入口** | R1 实测失败后确定。Pi 包 `exports` 无 `require`/`default` 条件，CJS 解析阶段即失败。`.mts` 入口让 tsx 走 ESM，爆炸半径限于 5 个文件（见 §4.3）|
 
 ---
 
@@ -299,12 +300,16 @@ flowchart TB
 ```
 src/lib/server/agent/                  ← 新增：Agent 引擎
   ├── skill-catalog.ts                 技能目录 + executeSkill（【无 Pi 依赖】）
-  ├── model-bridge.ts                  ModelConfig → pi-ai Model（【含 Pi 依赖】）
-  ├── tool-registry.ts                 技能定义 → AgentTool（【含 Pi 依赖】）
-  ├── agent-loop.ts                    Agent 实例装配 + 循环驱动（【含 Pi 依赖】，仅 worker）
+  ├── tool-schemas.ts                  TypeBox schema 映射（【无 Pi 依赖】）
   ├── context.ts                       字符预算裁剪 + 工具结果摘要（【无 Pi 依赖】）
   ├── guards.ts                        riskLevel 护栏（【无 Pi 依赖】）
-  └── persist.ts                       事件/工具调用落库（【无 Pi 依赖】）
+  ├── persist.ts                       事件/工具调用落库（【无 Pi 依赖】）
+  ├── model-bridge.mts                 ModelConfig → pi-ai Model（【含 Pi 依赖】→ .mts）
+  ├── tool-registry.mts                技能定义 → AgentTool（【含 Pi 依赖】→ .mts）
+  ├── types.mts                        自定义消息类型声明合并（【含 Pi 依赖】→ .mts）
+  └── agent-loop.mts                   Agent 实例装配 + 循环驱动（【含 Pi 依赖】→ .mts）
+
+src/worker/index.mts                   ← 改后缀：worker 入口（ESM，见 D17）
 
 src/lib/server/services/
   └── agent-service.ts                 ← 新增：会话/消息/Run 的 CRUD（无 Pi 依赖）
@@ -946,6 +951,64 @@ src/components/agent/
 | R1 | **ESM 加载**：两个包均 `"type": "module"`，无 CJS 入口。worker 由 `tsx` 启动 | P0 第一步：`import { Agent } from "@earendil-works/pi-agent-core"` 在 worker 里跑通 | Node 24 的 `require(esm)` 已默认支持；若不成立则 worker 改用 ESM 启动或加 loader |
 | R2 | **TypeBox 校验**：裸 JSON Schema 强转可能失效 | 用一个工具跑通"模型给合法参数 → 校验通过"与"非法参数 → 校验拒绝" | 已决策重建为 TypeBox schema（D10）|
 | R3 | **pi-ai 吃自定义 baseUrl**：`compat` 自动探测能否适配 DeepSeek/GLM/Kimi/本地 Ollama | 用真实 `ModelConfig` 各跑一次 `streamSimple` | 若自动探测失败，显式填 `Model.compat` |
+
+### 11.1.1 实测结果（2026-10-09）
+
+Task 0 已实测三项风险，**结论与本节原假设有出入，以实测为准**。
+
+| 风险 | 结果 | 实测结论 |
+|---|---|---|
+| R1 ESM 加载 | ❌ **失败，已定位** | 失败模式是 `ERR_PACKAGE_PATH_NOT_EXPORTED`，**不是**预期的 `ERR_REQUIRE_ESM` |
+| R2 TypeBox 校验 | ✅ **通过** | `{ good: true, bad: false, badType: false }`（合法通过 / 超范围拒绝 / 类型错拒绝）|
+| R3 自定义 baseUrl | ⚠️ **机制通过，待真实验证** | mock 服务器验证：baseUrl 被尊重、compat 探测生效、未知 URL 回退标准 OpenAI 配置 |
+
+#### R1 详情（重要：本节原假设的错误）
+
+**根因**：tsx 把 `.ts` 转成 CJS（因 `package.json` 无 `"type": "module"`），而 Pi 三个包的 `exports` 映射**只声明 `types` + `import` 条件，无 `require`、无 `default`** —— 模块解析阶段即失败，根本走不到 `require(esm)` 互操作那一步。
+
+隔离证据：
+
+```
+node --input-type=module -e "await import('@earendil-works/pi-agent-core')"  → ✅ OK
+node -e "require('@earendil-works/pi-agent-core')"                          → ❌ ERR_PACKAGE_PATH_NOT_EXPORTED
+```
+
+因此本节原写的缓解手段「Node 24 的 `require(esm)` 已默认支持」**不成立** —— 对 `exports` 映射中缺少 `require`/`default` 条件的包无效。
+
+**修复方案（已决策，D17）**：改用 `.mts` 入口，让 tsx 走 ESM。已验证可同时加载 Pi 与 Prisma。
+
+**传播链已完整验证**（2026-10-09）：
+
+| 验证项 | 结果 |
+|---|---|
+| `.mts`(ESM) → Pi 包 | ✅ `typeof Agent === "function"` |
+| `.mts`(ESM) → 无 Pi 依赖的 CJS `.ts` 模块 | ✅ 具名值 / 数组 / 函数 / 类型导出全部可用 |
+| vitest `.ts` 测试 → `.mts` 模块 | ✅ 2 tests passed |
+
+因此 `.mts` 方案对任务 7/10/11 无阻塞，且爆炸半径精确限于 5 个文件。
+
+#### R3 补充发现：provider 是自由文本
+
+项目把 `ModelConfig.provider` 存为自由文本，默认值 `"openai-compatible"`（见 `src/app/(protected)/models/page.tsx:50`），**不匹配 pi-ai 任何已知 provider ID**。
+
+pi-ai 的 `detectCompat` 匹配规则（读 `node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js:1221` 确认）：
+
+- `deepseek.com`、`open.bigmodel.cn` / `api.z.ai`、`api.moonshot.`（**带尾点**，URL 中其他位置含 "moonshot" 不匹配）
+- 未匹配的 URL 回退到**有效的**标准 OpenAI 配置（不是失败）
+
+**影响**：compat 探测实际只靠 `baseUrl` 子串。DeepSeek 的 `max_tokens` vs `max_completion_tokens` 等 provider 差异**不会自动生效**。Task 4 应考虑显式的 `provider` → `compat` 映射，而非依赖自动探测。
+
+#### 其他实测发现（影响后续任务）
+
+| 发现 | 影响 |
+|---|---|
+| `ModelCost` 要求 **4 个字段**（`input` / `output` / `cacheRead` / `cacheWrite`），设计文档 §8.1 示例只写了 2 个 | **Task 4 必须补全 4 个字段**，否则 `tsc --noEmit` 失败 |
+| `TranscriptContext` 是**带品牌（branded）类型**，官方注释称「Only `normalizeContext()` produces this type」 | **Task 10 不能用 `as never` 蒙混**；`normalizeContext` 在包根未发现再导出，需在 Task 10 前确认 |
+| `UserMessage` 要求 `timestamp` 字段 | 构造消息时勿遗漏 |
+| 环境实际 Node 为 **v24.16.0**（`node -v`），CLAUDE.md 写 24.17.0 | 不影响功能（均满足 Pi 的 `>=22.19.0`），建议订正 CLAUDE.md |
+| Windows 下 `process.exit(0)` 触发 libuv `Assertion failed` 噪音 | 仅退出时噪音，输出已完整打印；脚本可改用自然结束 |
+
+---
 
 ### 11.2 其他风险
 
