@@ -56,4 +56,10 @@ describe("deriveConversationTitle（会话标题）", () => {
     expect(deriveConversationTitle("")).toBe("新任务");
     expect(deriveConversationTitle("   ")).toBe("新任务");
   });
+
+  it("标题按码点截断，emoji 不会被切成半个字符", () => {
+    const title = deriveConversationTitle("🎉".repeat(30));
+    expect([...title]).toHaveLength(21);
+    expect(title.endsWith("…")).toBe(true);
+  });
 });

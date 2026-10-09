@@ -16,9 +16,11 @@
  *   3. 发消息        POST messages → Run=pending、会话=running、标题按首条消息派生；紧接着再发 → 409
  *   4. SSE 完整序列  订阅 ?last_event_id=0 直到 agent_end：首帧 agent_start、末帧 agent_end、
  *                    id 严格递增；至少一帧 message_end 带非空 text（D23）；
- *                    tool_execution_end 帧帧有非空 summary（§4.3）；至少一帧 status
+ *                    tool_execution_end 中「对应库中 agent_tool_calls 行」的帧有非空 summary（§4.3）；
+ *                    至少一帧 status
  *   5. 首屏契约      GET 详情十个字段齐全；messages 只有 user；events 有 assistant 文本；
- *                    tool_calls 每行 summary 非空；事件 id ≤ latest_event_id 且与库一致；runs 含刚跑完的 Run
+ *                    tool_calls 每行 summary 非空；artifacts 非空且与接口 6 同源同形状；
+ *                    事件 id ≤ latest_event_id 且与库一致；runs 含刚跑完的 Run
  *   6. 去重边界      以 latest_event_id 为起点重连 2 秒 → 不应收到 id ≤ latest_event_id 的帧
  *   7. 取消          终态 Run → 409、不存在的 Run → 404、pending Run → 200
  *                    （Run=cancelled / Task=failed / 会话=idle）
@@ -440,22 +442,32 @@ async function main(): Promise<void> {
       `没有任何一帧 message_end 带非空 payload.text（D23 回归）：${JSON.stringify(frames.filter((frame) => frame.type === "message_end").map((frame) => frame.payload))}`,
     );
 
-    // §4.3：tool_execution_end 的摘要由 SSE 出口补齐，前端只渲染不算
+    // §4.3：tool_execution_end 的摘要由 SSE 出口补齐，前端只渲染不算。
+    // tool_execution_end 的帧未必都有对应的 agent_tool_calls 行：Pi 对「工具名不存在 /
+    // 参数校验失败 / 输出被 length 截断」这三种情况会在走钩子之前就短路（不落行、无摘要）。
+    // 因此只对「能对应到库中行」的帧断言摘要，另外要求整体至少有一帧有摘要（避免空跑通过）。
     const toolEndFrames = frames.filter((frame) => frame.type === "tool_execution_end");
     assert(toolEndFrames.length >= 1, "没有任何 tool_execution_end 帧（模型没调用工具，换个更能触发工具的提问）");
-    const missingSummary = toolEndFrames.filter(
-      (frame) => typeof frame.payload.summary !== "string" || frame.payload.summary.length === 0,
+    const rowToolCallIds = new Set(
+      (await prisma.agentToolCall.findMany({ where: { runId }, select: { toolCallId: true } })).map(
+        (row) => row.toolCallId,
+      ),
+    );
+    const framesWithRow = toolEndFrames.filter((frame) => rowToolCallIds.has(String(frame.payload.toolCallId)));
+    assert(framesWithRow.length > 0, "没有任何 tool_execution_end 帧对应到 agent_tool_calls 行（工具调用落库没生效）");
+    const missingSummary = framesWithRow.filter(
+      (frame) => typeof frame.payload.summary !== "string" || !frame.payload.summary,
     );
     assert(
       missingSummary.length === 0,
-      `${missingSummary.length}/${toolEndFrames.length} 帧 tool_execution_end 缺少非空 payload.summary：${JSON.stringify(missingSummary.map((frame) => frame.payload))}`,
+      `有 ${missingSummary.length} 帧对应到库中工具调用却没有 summary（§4.3 的补齐没生效）：${JSON.stringify(missingSummary.map((frame) => frame.payload))}`,
     );
 
     const statusFrames = frames.filter((frame) => frame.type === "status");
     assert(statusFrames.length >= 1, "没有任何 status 帧（终态结论没下发）");
     console.log(
       `【4/9】SSE 通过：首帧 ${frames[0].type}(id=${frames[0].id}) 末帧 ${frames[frames.length - 1].type}(id=${frames[frames.length - 1].id}) 严格递增；` +
-        `message_end 带文本 ${assistantTexts.length} 帧，tool_execution_end ${toolEndFrames.length} 帧（summary 齐全），status ${statusFrames.length} 帧`,
+        `message_end 带文本 ${assistantTexts.length} 帧，tool_execution_end ${toolEndFrames.length} 帧（其中 ${framesWithRow.length} 帧对应库中行、summary 齐全），status ${statusFrames.length} 帧`,
     );
 
     // ========== 5) 首屏契约 ==========
@@ -467,6 +479,7 @@ async function main(): Promise<void> {
     const homeMessages = home.body.messages as Array<{ role: string }>;
     const homeEvents = home.body.events as Array<{ id: number; run_id: number; type: string; payload: Record<string, unknown> }>;
     const homeToolCalls = home.body.tool_calls as Array<{ id: number; tool_name: string; summary: string }>;
+    const homeArtifacts = home.body.artifacts as Array<Record<string, unknown>>;
     const homeRuns = home.body.runs as RunPayload[];
     const latestEventId = home.body.latest_event_id as number;
 
@@ -492,6 +505,20 @@ async function main(): Promise<void> {
       emptySummaries.length === 0,
       `${emptySummaries.length}/${homeToolCalls.length} 行 tool_calls 的 summary 为空：${JSON.stringify(emptySummaries.map((row) => row.tool_name))}`,
     );
+
+    // 工件链路：本次提问会触发 topic_generate，必然产出 topic 工件
+    assert(homeArtifacts.length > 0, "首屏 artifacts 为空（extractArtifacts → 事件 → 首屏这条链路断了）");
+    const artifactList = await api<{ items: Array<Record<string, unknown>> }>(
+      token,
+      `/api/agent/conversations/${conversationId}/artifacts`,
+    );
+    assert(artifactList.status === 200, `工件接口应返回 200，实际 ${artifactList.status}`);
+    // 与首屏 artifacts 同源同形状（设计稿 §4.4：两处不得各写一份序列化）
+    assert(
+      JSON.stringify(artifactList.body.items) === JSON.stringify(homeArtifacts),
+      "工件接口与首屏 artifacts 的内容或形状不一致",
+    );
+
     assert(
       homeEvents.every((event) => event.id <= latestEventId),
       `events 里有 id 大于 latest_event_id（${latestEventId}）的帧：${homeEvents.map((event) => event.id).join(",")}`,
@@ -516,7 +543,8 @@ async function main(): Promise<void> {
     );
     console.log(
       `【5/9】首屏：messages ${homeMessages.length} 条（全 user），events ${homeEvents.length} 条（assistant 文本 ${homeAssistantTexts.length} 条），` +
-        `tool_calls ${homeToolCalls.length} 行（summary 齐全），latest_event_id=${latestEventId}，runs ${homeRuns.length} 个`,
+        `tool_calls ${homeToolCalls.length} 行（summary 齐全），artifacts ${homeArtifacts.length} 个（与接口 6 一致），` +
+        `latest_event_id=${latestEventId}，runs ${homeRuns.length} 个`,
     );
     console.log("【5/9】首屏契约 通过：十字段齐全且内容自洽");
 

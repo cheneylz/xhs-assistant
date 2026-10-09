@@ -193,6 +193,8 @@ async function executeAgentRun(run: AgentRun): Promise<void> {
   if (!modelConfig || !apiKey) {
     await persistAgentEvent(run.id, { type: "error", message: "未配置默认文本模型，无法执行" });
     await finishRun({ runId: run.id, status: "failed", errorType: "no_model_config" });
+    // 会话必须回到 idle，否则前端会永久停在「执行中」（输入框禁用、刷新也不恢复）
+    await updateConversationStatus({ conversationId: run.conversationId, status: "idle" });
     return;
   }
 
@@ -204,6 +206,8 @@ async function executeAgentRun(run: AgentRun): Promise<void> {
   if (!triggerMessage) {
     await persistAgentEvent(run.id, { type: "error", message: "会话中没有用户消息" });
     await finishRun({ runId: run.id, status: "failed", errorType: "no_user_message" });
+    // 会话必须回到 idle，否则前端会永久停在「执行中」（输入框禁用、刷新也不恢复）
+    await updateConversationStatus({ conversationId: run.conversationId, status: "idle" });
     return;
   }
 

@@ -49,8 +49,10 @@ export function isRunTerminal(status: string): boolean {
 export function deriveConversationTitle(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return DEFAULT_CONVERSATION_TITLE;
-  if (trimmed.length <= TITLE_MAX_LENGTH) return trimmed;
-  return `${trimmed.slice(0, TITLE_MAX_LENGTH)}…`;
+  // 按码点而不是 UTF-16 单元截断：slice(0, 20) 会把 emoji 的代理对切成两半
+  const codePoints = [...trimmed];
+  if (codePoints.length <= TITLE_MAX_LENGTH) return trimmed;
+  return `${codePoints.slice(0, TITLE_MAX_LENGTH).join("")}…`;
 }
 
 /**
@@ -261,7 +263,7 @@ export async function sweepStuckRuns(thresholdMinutes: number): Promise<number> 
   // pending（finishRun 是刻意保持 Run 与 Task 同步的，清扫也必须遵守同一约定）。
   const stuckRuns = await prisma.agentRun.findMany({
     where: { status: "running", startedAt: { lt: cutoff } },
-    select: { id: true, taskId: true },
+    select: { id: true, taskId: true, conversationId: true },
   });
   if (stuckRuns.length === 0) return 0;
 
@@ -285,6 +287,24 @@ export async function sweepStuckRuns(thresholdMinutes: number): Promise<number> 
       },
     }),
   ]);
+
+  // 清扫后会话必须回到 idle：conversation.status 是前端「执行中」的信号，
+  // 不清的话用户会永久卡在禁用输入框的状态（服务端其实已允许再发消息）。
+  // 只清「清扫后已无其它活跃 Run」的会话 —— 与 cancelPendingRun 的 stillActive 同口径。
+  const conversationIds = [...new Set(stuckRuns.map((run) => run.conversationId))];
+  const stillActiveRows = await prisma.agentRun.findMany({
+    where: { conversationId: { in: conversationIds }, status: { in: ["pending", "running"] } },
+    select: { conversationId: true },
+    distinct: ["conversationId"],
+  });
+  const stillActive = new Set(stillActiveRows.map((row) => row.conversationId));
+  const toIdle = conversationIds.filter((id) => !stillActive.has(id));
+  if (toIdle.length > 0) {
+    await prisma.agentConversation.updateMany({
+      where: { id: { in: toIdle } },
+      data: { status: "idle", updatedAt: now },
+    });
+  }
 
   return stuckRuns.length;
 }
@@ -487,8 +507,9 @@ export async function cancelPendingRun(runId: number, userId: number): Promise<C
       };
     }
 
-    // 同步 Task：任务中心里这条 Agent 任务不能永远停在 pending（与 finishRun 同一约定）
-    await tx.task.update({
+    // 同步 Task：任务中心里这条 Agent 任务不能永远停在 pending（与 finishRun 同一约定）。
+    // 用 updateMany 而不是 update：Task 行缺失（跨块竞态）时不该让整个取消变成 500。
+    await tx.task.updateMany({
       where: { id: run.taskId },
       data: { status: "failed", progress: 0, finishedAt: now },
     });
