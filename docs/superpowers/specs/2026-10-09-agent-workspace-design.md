@@ -1008,7 +1008,45 @@ Task 0 已实测三项风险，**结论与本节原假设有出入，以实测�
 |---|---|---|
 | R1 ESM 加载 | ❌ **失败，已定位** | 失败模式是 `ERR_PACKAGE_PATH_NOT_EXPORTED`，**不是**预期的 `ERR_REQUIRE_ESM` |
 | R2 TypeBox 校验 | ✅ **通过** | `{ good: true, bad: false, badType: false }`（合法通过 / 超范围拒绝 / 类型错拒绝）|
-| R3 自定义 baseUrl | ⚠️ **机制通过，待真实验证** | mock 服务器验证：baseUrl 被尊重、compat 探测生效、未知 URL 回退标准 OpenAI 配置 |
+| R3 自定义 baseUrl | ✅ **通过（真实验证，2026-10-09 补完）** | 真实 provider 端到端成功；但需 `Model.headers` 补自定义请求头，见下 |
+
+#### R3 真实验证详情（2026-10-09 补完）
+
+用项目里真实配置的 `ModelConfig` 跑通 `streamSimple`，`stopReason=stop`，`usage` 返回
+`{input:35, output:49, reasoning:47, totalTokens:84}`（**证明 token 计量路径有真实数据**）。
+
+验证过程中发现**两个必须修的问题**，都不是代码缺陷而是配置能力缺口：
+
+**① baseUrl 缺 `/v1` 段**（已由用户修正为 `https://opencode.ai/zen/go/v1`）
+
+原值 `https://opencode.ai/zen/go` 返回 404 HTML 页面。探测确认：
+
+| 路径 | 状态 |
+|---|---|
+| `POST /zen/go/chat/completions` | 404 ❌ |
+| `POST /zen/go/v1/chat/completions` | 401 ✅（路径存在） |
+| `GET /zen/go/v1/models` | 200 ✅ |
+
+**② 该 provider 要求自定义请求头 `x-opencode-session`**（**尚未修复，影响面超出 Agent**）
+
+不带该头返回 `400 MissingSessionID`。实测**任意非空值**均可（`xhs-assistant` 即通过），
+它是网关的路由提示而非凭证。
+
+**但当前架构无处安放自定义请求头**：
+
+- `ModelConfig` 没有存 headers 的字段
+- `buildPiModel` 不设 `Model.headers`（pi-ai 的 `BaseModel.headers?: Record<string,string>` 支持）
+- **项目自研客户端 `OpenAICompatibleTextClient.postJson` 只发 `Authorization` + `Content-Type`**
+
+**影响面：项目现有全部 AI 功能（标题/文案/审校/改写/生图）都走自研客户端，因此对这个
+provider 全部不可用** —— 不只是 Agent。
+
+**已验证的修法**：给 `Model.headers` 挂 `{"x-opencode-session": "xhs-assistant"}` 后 R3 通过。
+生产化需要三处配套：
+
+1. `ModelConfig` 增加可选 `headers` 字段（JSON），模型配置页面加编辑入口
+2. `buildPiModel` 把 `ModelConfig.headers` 透传到 `Model.headers`
+3. `OpenAICompatibleTextClient.postJson` 支持额外请求头（否则项目现有 AI 功能对该 provider 仍不可用）
 
 #### R1 详情（重要：本节原假设的错误）
 
