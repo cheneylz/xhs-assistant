@@ -93,7 +93,7 @@ export async function listConversations(userId: number): Promise<AgentConversati
   });
 }
 
-/** 追加一条消息 */
+/** 追加一条消息，返回落库后的完整行（接口层要把它序列化返回给前端） */
 export async function appendMessage(options: {
   conversationId: number;
   role: "user" | "assistant" | "tool";
@@ -101,7 +101,7 @@ export async function appendMessage(options: {
   runId?: number | null;
   toolCalls?: Prisma.InputJsonValue;
   toolCallId?: string | null;
-}): Promise<{ id: number }> {
+}): Promise<AgentMessage> {
   const message = await prisma.agentMessage.create({
     data: {
       conversationId: options.conversationId,
@@ -114,7 +114,7 @@ export async function appendMessage(options: {
       createdAt: shanghaiNow(),
     },
   });
-  return { id: message.id };
+  return message;
 }
 
 /**
