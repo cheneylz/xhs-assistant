@@ -53,6 +53,8 @@ export function serializeEventForDb(event: Record<string, unknown>): SerializedE
     }
     // usage 是 P0 唯一的 token 明细来源（agent_runs.tokens_used 之外的明细），
     // 体积很小，必须保留；P0 验收脚本会断言它在。
+    // 注意：工具结果消息（role="toolResult"）的 usage 是工具自身的执行开销，
+    // 不等价于 LLM token —— 消费方需按 role 区分，别一概累加。
     if (message?.usage !== undefined) payload.usage = message.usage;
     return { type, payload: payload as Prisma.InputJsonValue };
   }

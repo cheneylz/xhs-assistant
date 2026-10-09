@@ -3,7 +3,7 @@
  * 覆盖：事件序列化、工件事件抽取、工具调用记录
  */
 import { describe, expect, it } from "vitest";
-import { extractArtifacts, serializeEventForDb } from "./persist";
+import { extractArtifacts, extractMessageText, serializeEventForDb } from "./persist";
 
 describe("serializeEventForDb（事件序列化）", () => {
   it("保留事件类型与关键载荷", () => {
@@ -51,22 +51,35 @@ describe("serializeEventForDb（事件序列化）", () => {
     expect(payload.usage).toEqual({ input: 100, output: 20, totalTokens: 120 });
   });
 
-  it("message_end 的 user / tool 消息不留正文（避免与 agent_messages 重复渲染）", () => {
+  it("message_end 的 user / toolResult 消息不留正文（避免与 agent_messages 重复渲染）", () => {
     const userEnd = serializeEventForDb({
       type: "message_end",
       message: { role: "user", content: [{ type: "text", text: "帮我出选题" }] },
     });
     expect(userEnd.payload as Record<string, unknown>).toEqual({ role: "user" });
 
+    // Pi 的工具结果消息角色是 "toolResult"（不是 "tool"，角色集合见 pi-ai 的 types.d.ts）
     const toolEnd = serializeEventForDb({
       type: "message_end",
-      message: { role: "tool", content: [{ type: "toolResult", content: "ok" }] },
+      message: { role: "toolResult", content: [{ type: "text", text: "ok" }] },
     });
-    expect(toolEnd.payload as Record<string, unknown>).toEqual({ role: "tool" });
+    expect(toolEnd.payload as Record<string, unknown>).toEqual({ role: "toolResult" });
   });
 
   it("message_end 内容为空时仍落一条（前端靠它判断该步结束）", () => {
     const serialized = serializeEventForDb({ type: "message_end", message: { role: "assistant", content: [] } });
+    expect(serialized.payload as Record<string, unknown>).toEqual({ role: "assistant" });
+  });
+
+  it("extractMessageText 对畸形输入安全返回（模型返回的 payload 不可信）", () => {
+    expect(extractMessageText(undefined)).toBe("");
+    expect(extractMessageText("不是数组")).toBe("");
+    expect(extractMessageText([null, "字符串", { type: "text", text: 123 }, { type: "text" }])).toBe("");
+    expect(extractMessageText([{ type: "text", text: "ok" }, { type: "thinking", text: "思考中" }])).toBe("ok");
+  });
+
+  it("message_end 缺失 message 字段时按助手角色兜底（不抛错）", () => {
+    const serialized = serializeEventForDb({ type: "message_end" });
     expect(serialized.payload as Record<string, unknown>).toEqual({ role: "assistant" });
   });
 });
