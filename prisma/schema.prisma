@@ -718,6 +718,10 @@ model AgentToolCall {
   status     String   @default("running")
   errorType  String?  @map("error_type")
   durationMs Int?     @map("duration_ms")
+  /// 工具卡摘要：服务端用 SkillDefinition.summarize 算好（D21）。
+  /// 必须是列而不是读时计算 —— 被阻断的行 result 为 null，
+  /// 可读原因只存在于 guard 的返回值里，落库时是唯一同时握有「工具+结果+原因」的时刻。
+  summary    String?
   createdAt  DateTime @map("created_at")
 
   @@index([runId, stepIndex])
