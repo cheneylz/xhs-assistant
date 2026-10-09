@@ -475,6 +475,17 @@ src/lib/server/agent/
 /** 工件类型：驱动右栏工件面板渲染 */
 export type ArtifactKind = "draft" | "topic" | "image" | "review" | "report" | "script";
 
+/** 产出物声明：把工具返回值映射为工件面板条目 */
+export interface ArtifactSpec {
+  kind: ArtifactKind;
+  /** 产出物 id 所在字段名；该字段是数组时表示一次产出多个工件 */
+  idField: string;
+  /** 标题字段名（数组产出按索引对应；单产出取首项） */
+  titleField?: string;
+  /** 跳转链接前缀，拼接 id 得到 href */
+  hrefPrefix: string;
+}
+
 export interface SkillDefinition {
   // ---- 现有字段（不变）----
   skillKey: string;
@@ -486,10 +497,16 @@ export interface SkillDefinition {
   // ---- 新增字段 ----
   /** 护栏分级依据 */
   riskLevel: "read" | "write" | "publish";
-  /** 产出物类型，驱动工件面板；无产出则不填 */
-  produces?: ArtifactKind[];
+  /** 产出物声明，驱动工件面板；无产出则不填 */
+  artifact?: ArtifactSpec;
 }
 ```
+
+**为什么是 `artifact: ArtifactSpec` 而不是 `produces: ArtifactKind[]`**（本设计早期版本的错误，已修正）：
+
+`produces` 只声明"产出什么类型"，无法表达"从返回值的哪个字段取 id、怎么拼跳转链接"。而这些信息是必需的，于是必须**另建一张 `skillKey → {idField, hrefPrefix}` 映射表** —— 那就是同一套工具的第二份元数据，两表必须手工保持同步，且失配时静默返回空工件、不报错。
+
+把配方直接放进 catalog 条目，**单一真相源**，失配不可能发生。`schedule.recommend` 与 `hot.refresh` 无产出，不填即可。
 
 护栏语义：
 
@@ -501,16 +518,24 @@ export interface SkillDefinition {
 
 ### 6.3 首期工具清单（15 个）
 
-**A. 内容生产 —— 复用型（6 个，`executeSkill` 已有实现；仅需补 `riskLevel` / `produces` 两个元数据字段，业务逻辑零改动）**
+**A. 内容生产 —— 复用型（6 个，`executeSkill` 已有实现；仅需补 `riskLevel` / `artifact` 两个元数据字段，业务逻辑零改动）**
 
-| skillKey | 名称 | risk | produces |
-|---|---|---|---|
-| `hot.refresh` | 热点采集 | read | — |
-| `topic.generate` | 选题生成 | write | topic |
-| `content.notePack` | 文案包生成 | write | draft |
-| `review.submit` | 内容审校 | write | review |
-| `script.generate` | 视频脚本生成 | write | script |
-| `schedule.recommend` | 发布时间推荐 | write | — |
+| skillKey | 名称 | risk | 实证依据 | artifact |
+|---|---|---|---|---|
+| `hot.refresh` | 热点采集 | **write** | `hotTopic.createMany` + `deleteMany` | — |
+| `topic.generate` | 选题生成 | write | `topicSuggestion.create` | `{kind:"topic", idField:"suggestion_ids", titleField:"titles", hrefPrefix:"/platforms/xhs/planner?id="}` ← 多产出 |
+| `content.notePack` | 文案包生成 | write | `aiDraft.create` | `{kind:"draft", idField:"draft_id", titleField:"titles", hrefPrefix:"/platforms/xhs/drafts?id="}` |
+| `review.submit` | 内容审校 | write | `reviewJob.create` + `reviewFinding.createMany` | `{kind:"review", idField:"review_id", hrefPrefix:"/platforms/xhs/review?id="}` |
+| `script.generate` | 视频脚本生成 | **read** | 无 prisma 调用 | — |
+| `schedule.recommend` | 发布时间推荐 | **read** | 仅 `findFirst`/`findMany` | — |
+
+**三处对早期设计的修正（逐函数核实源码后得出，非推测）：**
+
+- **`hot.refresh` 由 `read` 改为 `write`**：核实 `collectHotTopicsForUser` 内有 `hotTopic.createMany`（写快照）与 `hotTopic.deleteMany`（清上一批）。原标 `read` 会让 Task 7 给它 `replay: "safe"`、并在面向模型的工具目录里标"［只读］"，两处都是误导。
+- **`schedule.recommend` 由 `write` 改为 `read`**：核实 `recommendSchedules`（`schedule-service.ts:85`）函数体内只有 `platformAccount.findFirst` 与 `publishJob.findMany` 两种**只读**操作。（该文件第 181 行的 `scheduleSuggestion.create` 属于另一个函数。）
+- **`script.generate` 由 `write` 改为 `read`，且不声明 artifact**：`generateVideoScript` 无任何 prisma 调用，只读草稿 + 调 LLM。同时它返回 `{ script: string }` —— 一段没有数据库行的文本，而 `ArtifactRef.id` 是 `number`，无法映射，故不声明 artifact（脚本内容直接在对话流中呈现）。待将来脚本落库后再补。
+
+**教训记录**：`riskLevel` 必须按**函数体内是否真有写操作**逐一定，不能从技能名或描述推断。最初 6 个里标错了 3 个。
 
 **B. 内容生产 —— 新增封装（5 个，已有 API 路由与 AI 客户端方法，需新写 `executeSkill` case）**
 

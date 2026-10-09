@@ -296,6 +296,8 @@ model AgentMessage {
   tokenUsage     Json?    @map("token_usage")
   createdAt      DateTime @map("created_at")
 
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
   @@index([conversationId, id])
   @@map("agent_messages")
 }
@@ -316,6 +318,8 @@ model AgentRun {
   startedAt        DateTime? @map("started_at")
   finishedAt       DateTime? @map("finished_at")
   createdAt        DateTime  @map("created_at")
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
   @@map("agent_runs")
@@ -352,6 +356,16 @@ model AgentToolCall {
 }
 ```
 
+**三处必须注意的设计点：**
+
+1. **`conversation` 关系是必需的**。Prisma 要求关系两侧都声明。`AgentConversation` 上的 `messages AgentMessage[]` / `runs AgentRun[]` 需要子侧配 `@relation(...)`，否则 `prisma validate` 报 `P1012 missing an opposite relation field`。
+   **不要**通过删除父侧数组来"修复"—— 现有 schema（`Note`→`NoteAsset`/`NoteComment`、`AiDraft`→`DraftAsset`、`PlatformAccount`→`AccountCookieVersion` 等）一致使用「父侧数组 + 子侧 `@relation` + `onDelete: Cascade`」。且级联删除是必要行为：删会话应连带删除其消息与 Run。
+
+2. **`AgentRun.taskId` 是刻意的裸标量，不建关系**。建关系需要反向修改现有的 `Task` 模型（加 `agentRuns AgentRun[]`），而本设计明确「复用 Task 做执行载体、不修改 Task」。所有代码按标量 id 查询，功能不受影响。
+
+3. **`createdAt` 均无 `@default(now())`** —— 这是全库一致约定（`grep -c "@default(now())" prisma/schema.prisma` 为 0），时间戳由代码显式传 `shanghaiNow()` 以保证上海时区。
+   **因此所有 create 调用必须显式传 `createdAt`**，遗漏会在运行时报错（Prisma 不会给默认值）。
+
 - [ ] **Step 2: 校验 schema 并生成客户端**
 
 ```bash
@@ -374,27 +388,69 @@ Expected: `Your database is now in sync with your Prisma schema.`
 
 - [ ] **Step 4: 验证表可读写**
 
-```bash
-npx tsx -e "
-import { prisma } from './src/lib/server/core/db';
-(async () => {
-  const conv = await prisma.agentConversation.create({ data: { userId: 1, title: '验证会话' } });
-  console.log('created:', conv.id, conv.title);
-  const run = await prisma.agentRun.create({ data: { conversationId: conv.id, userId: 1, taskId: 1 } });
-  console.log('run:', run.id, run.status, 'maxSteps=', run.maxSteps);
-  await prisma.agentEvent.create({ data: { runId: run.id, type: 'agent_start', payload: {} } });
+**注意**：`npx tsx -e "..."` 在本项目下不产出输出（Task 0 实测）。改用临时脚本文件。
+
+创建 `src/scripts/verify-agent-tables.ts`：
+
+```ts
+import { prisma } from "../lib/server/core/db";
+import { shanghaiNow } from "../lib/server/core/time";
+
+async function main() {
+  const conv = await prisma.agentConversation.create({
+    data: { userId: 1, title: "验证会话", createdAt: shanghaiNow() },
+  });
+  console.log("created:", conv.id, conv.title);
+
+  const run = await prisma.agentRun.create({
+    data: { conversationId: conv.id, userId: 1, taskId: 1, createdAt: shanghaiNow() },
+  });
+  console.log("run:", run.id, run.status, "maxSteps=", run.maxSteps);
+
+  await prisma.agentEvent.create({
+    data: { runId: run.id, type: "agent_start", payload: {}, createdAt: shanghaiNow() },
+  });
   const events = await prisma.agentEvent.findMany({ where: { runId: run.id } });
-  console.log('events:', events.length, events[0].type);
-  await prisma.agentEvent.deleteMany({ where: { runId: run.id } });
-  await prisma.agentRun.delete({ where: { id: run.id } });
+  console.log("events:", events.length, events[0].type);
+
+  await prisma.agentMessage.create({
+    data: { conversationId: conv.id, role: "user", content: "你好", createdAt: shanghaiNow() },
+  });
+  await prisma.agentToolCall.create({
+    data: { runId: run.id, stepIndex: 0, toolName: "test_tool", toolCallId: "call-1", params: {}, createdAt: shanghaiNow() },
+  });
+  console.log("messages/toolCalls 写入成功");
+
+  // 验证级联删除：删会话应连带删除消息与 Run
   await prisma.agentConversation.delete({ where: { id: conv.id } });
-  console.log('OK 清理完成');
-  process.exit(0);
-})();
-"
+  const leftoverMessages = await prisma.agentMessage.count({ where: { conversationId: conv.id } });
+  const leftoverRuns = await prisma.agentRun.count({ where: { id: run.id } });
+  console.log("级联删除检查: messages=", leftoverMessages, "runs=", leftoverRuns);
+  if (leftoverMessages !== 0 || leftoverRuns !== 0) throw new Error("级联删除未生效");
+
+  // 清理不随级联走的表
+  await prisma.agentEvent.deleteMany({ where: { runId: run.id } });
+  await prisma.agentToolCall.deleteMany({ where: { runId: run.id } });
+  console.log("OK 清理完成");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error("ERR:", e.message);
+    process.exit(1);
+  });
 ```
 
-Expected: `created: <id> 验证会话` / `run: <id> pending maxSteps= 20` / `events: 1 agent_start` / `OK 清理完成`
+运行：
+
+```bash
+npx tsx src/scripts/verify-agent-tables.ts
+```
+
+Expected: `created: <id> 验证会话` / `run: <id> pending maxSteps= 20` / `events: 1 agent_start` / `messages/toolCalls 写入成功` / `级联删除检查: messages= 0 runs= 0` / `OK 清理完成`
+
+验证完删除该临时脚本（**不要提交它**）。
 
 - [ ] **Step 5: 提交**
 
@@ -407,7 +463,7 @@ git commit -m "feat(prisma): 新增 Agent 工作台 5 张表"
 
 ## Task 2: 抽取 skill-catalog.ts（纯重构，行为不变）
 
-把 `SKILL_CATALOG` / `SkillDefinition` / `SkillContext` / `executeSkill` 从 `workflow-service.ts` 移到新文件，并新增 `riskLevel` / `produces` 元数据。
+把 `SKILL_CATALOG` / `SkillDefinition` / `SkillContext` / `executeSkill` 从 `workflow-service.ts` 移到新文件，并新增 `riskLevel` / `artifact` 元数据。
 
 **Files:**
 - Create: `src/lib/server/agent/skill-catalog.ts`
@@ -487,7 +543,7 @@ Expected: FAIL —— `Failed to resolve import "./skill-catalog"`
 
 创建 `src/lib/server/agent/skill-catalog.ts`。内容 = 从 `workflow-service.ts` 原样搬移 `SkillDefinition`、`SKILL_CATALOG`、`SkillContext`、`executeSkill`，并：
 
-1. `SkillDefinition` 新增 `riskLevel` 与 `produces` 字段
+1. `SkillDefinition` 新增 `riskLevel` 与 `artifact` 字段
 2. `SkillContext` 改为 `export`
 3. `executeSkill` 改为 `export`
 4. 新增 `findSkillDefinition`
@@ -514,6 +570,17 @@ import { makeUsageLogger } from "../services/usage-service";
 /** 工件类型：驱动 Agent 工作台的右栏工件面板渲染 */
 export type ArtifactKind = "draft" | "topic" | "image" | "review" | "report" | "script";
 
+/** 产出物声明：把工具返回值映射为工件面板条目 */
+export interface ArtifactSpec {
+  kind: ArtifactKind;
+  /** 产出物 id 所在字段名；该字段是数组时表示一次产出多个工件 */
+  idField: string;
+  /** 标题字段名（数组产出按索引对应；单产出取首项） */
+  titleField?: string;
+  /** 跳转链接前缀，拼接 id 得到 href */
+  hrefPrefix: string;
+}
+
 /** 技能护栏分级：read 直接执行 / write 直接执行但产出待验收 / publish 需人工确认 */
 export type SkillRiskLevel = "read" | "write" | "publish";
 
@@ -526,8 +593,8 @@ export interface SkillDefinition {
   instructions: string;
   /** 护栏分级（新增） */
   riskLevel: SkillRiskLevel;
-  /** 产出物类型，驱动工件面板（新增） */
-  produces?: ArtifactKind[];
+  /** 产出物声明，驱动工件面板（新增） */
+  artifact?: ArtifactSpec;
 }
 
 export const SKILL_CATALOG: SkillDefinition[] = [
@@ -536,7 +603,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     name: "热点采集",
     description: "采集全站热点榜单（30 分钟任务的手动版）",
     paramsSchema: { type: "object", properties: {} },
-    riskLevel: "read",
+    // 注意：热点采集会写库（hotTopic.createMany + deleteMany 清上一批），故为 write 而非 read
+    riskLevel: "write",
     instructions: `---
 name: 热点采集
 description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
@@ -560,7 +628,13 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
     description: "基于知识库+热点+爆款结构生成选题列表",
     paramsSchema: { type: "object", properties: { count: { type: "number", default: 5 } } },
     riskLevel: "write",
-    produces: ["topic"],
+    // 多产出：suggestion_ids 与 titles 都是数组，按索引对应
+    artifact: {
+      kind: "topic",
+      idField: "suggestion_ids",
+      titleField: "titles",
+      hrefPrefix: "/platforms/xhs/planner?id=",
+    },
     instructions: `---
 name: 选题生成
 description: 基于账号知识库、实时热点与爆款拆解结构，生成可直接落地的选题列表
@@ -584,7 +658,12 @@ description: 基于账号知识库、实时热点与爆款拆解结构，生成�
     description: "生成标题/正文/标签/CTA 完整文案包并保存草稿",
     paramsSchema: { type: "object", properties: { topic: { type: "string" } } },
     riskLevel: "write",
-    produces: ["draft"],
+    artifact: {
+      kind: "draft",
+      idField: "draft_id",
+      titleField: "titles",
+      hrefPrefix: "/platforms/xhs/drafts?id=",
+    },
     instructions: `---
 name: 文案包生成
 description: 围绕选题生成标题备选、正文、话题标签与行动引导的完整文案包，并保存为草稿
@@ -608,7 +687,11 @@ description: 围绕选题生成标题备选、正文、话题标签与行动引�
     description: "双层检测 + 三道门禁审校",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
     riskLevel: "write",
-    produces: ["review"],
+    artifact: {
+      kind: "review",
+      idField: "review_id",
+      hrefPrefix: "/platforms/xhs/review?id=",
+    },
     instructions: `---
 name: 内容审校
 description: 对草稿执行合规规则检测与三道门禁审校
@@ -631,8 +714,9 @@ description: 对草稿执行合规规则检测与三道门禁审校
     name: "视频脚本生成",
     description: "基于草稿文案生成短视频脚本",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
-    riskLevel: "write",
-    produces: ["script"],
+    // generateVideoScript 无任何 prisma 调用（只读草稿 + 调 LLM），故为 read 而非 write
+    // 不声明 artifact：返回 { script: string } 是无数据库行的纯文本，ArtifactRef.id 为 number 无法映射
+    riskLevel: "read",
     instructions: `---
 name: 视频脚本生成
 description: 将图文草稿转化为 30-60 秒口播分镜脚本
@@ -655,7 +739,8 @@ description: 将图文草稿转化为 30-60 秒口播分镜脚本
     name: "智能排期",
     description: "基于历史数据推荐发布时间",
     paramsSchema: { type: "object", properties: { platform_account_id: { type: "number" } } },
-    riskLevel: "write",
+    // recommendSchedules 仅 findFirst/findMany，无写入，故为 read
+    riskLevel: "read",
     instructions: `---
 name: 智能排期
 description: 基于历史发布数据与平台活跃规律，推荐未来 3 天最佳发布时间
@@ -824,11 +909,15 @@ Expected: PASS，6 个测试全通过。
 4. 文件顶部加：
 
 ```ts
+import { SKILL_CATALOG, executeSkill, type SkillContext } from "../agent/skill-catalog";
+
+// 技能目录与执行器已抽取至 agent/skill-catalog（无 Pi 依赖），此处再导出以保持原有引用路径可用
 export { SKILL_CATALOG, findSkillDefinition, type SkillDefinition } from "../agent/skill-catalog";
-import { executeSkill, type SkillContext } from "../agent/skill-catalog";
 ```
 
-注意：`workflow-service.ts` 中若有引用 `SkillContext` 或 `executeSkill` 的其他位置（`runWorkflow`），保持引用不变即可。
+**注意**：`export { X } from "..."` 只做再导出，**不产生本地绑定**。而 `workflow-service.ts` 本地要用到 `SKILL_CATALOG`（`ensureUserSkills`）和 `SkillContext`（`runWorkflow`），所以必须同时有一条 `import` 语句。漏掉会报 `Cannot find name 'SKILL_CATALOG'`。
+
+**另一个坑**：`tsconfig.json` **没有开 `noUnusedLocals`**，所以删代码后遗留的未使用 import `tsc` 不会报错，需要手动排查（`grep` 每个可疑 import 的符号在文件内的使用次数）。
 
 - [ ] **Step 6: 运行全部测试确认重构无回归**
 
@@ -852,7 +941,7 @@ Expected: 无错误。
 
 ```bash
 git add src/lib/server/agent/skill-catalog.ts src/lib/server/agent/skill-catalog.test.ts src/lib/server/services/workflow-service.ts
-git commit -m "refactor: 抽取 skill-catalog 供工作流与 Agent 共用，新增 riskLevel/produces 元数据"
+git commit -m "refactor: 抽取 skill-catalog 供工作流与 Agent 共用，新增 riskLevel/artifact 元数据"
 ```
 
 ---
@@ -1689,11 +1778,13 @@ Expected: FAIL —— `Failed to resolve import "./tool-registry"`
  *
  * 【本文件含 Pi 依赖】
  */
+import type { ArtifactKind } from "./skill-catalog";
 
 /** 工件卡片：工具产出物在右栏工件面板的展示数据 */
 export interface ArtifactMessage {
   role: "artifact";
-  kind: "draft" | "topic" | "image" | "review" | "report" | "script";
+  // 复用 skill-catalog 的 ArtifactKind，避免同一个联合类型有两处定义而漂移
+  kind: ArtifactKind;
   id: number;
   title: string;
   href: string;
@@ -1882,6 +1973,10 @@ describe("extractArtifacts（工件抽取）", () => {
     expect(extractArtifacts("hot.refresh", { collected: 30 })).toEqual([]);
   });
 
+  it("script.generate 无 artifact 声明，返回空数组（返回纯文本无 id 可映射）", () => {
+    expect(extractArtifacts("script.generate", { script: "开场钩子…" })).toEqual([]);
+  });
+
   it("未知工具返回空数组", () => {
     expect(extractArtifacts("not.exist", {})).toEqual([]);
   });
@@ -1959,33 +2054,35 @@ export interface ArtifactRef {
   href: string;
 }
 
-/** 产出物 ID 字段与跳转路径的映射 */
-const ARTIFACT_ROUTES: Record<string, { idField: string; hrefPrefix: string }> = {
-  "topic.generate": { idField: "suggestion_ids", hrefPrefix: "/platforms/xhs/planner?id=" },
-  "content.notePack": { idField: "draft_id", hrefPrefix: "/platforms/xhs/drafts?id=" },
-  "review.submit": { idField: "review_id", hrefPrefix: "/platforms/xhs/review?id=" },
-};
-
-/** 从工具产出中抽取工件引用（驱动右栏工件面板） */
+/**
+ * 从工具产出中抽取工件引用（驱动右栏工件面板）
+ *
+ * 产出物配方来自 catalog 里各技能的 artifact 声明，**不另建映射表** ——
+ * 单一真相源，避免两张表失配导致静默返回空工件。
+ */
 export function extractArtifacts(toolName: string, output: Record<string, unknown>): ArtifactRef[] {
   const definition = findSkillDefinition(toolName);
-  if (!definition?.produces?.length) return [];
+  const spec = definition?.artifact;
+  if (!spec) return [];
 
-  const route = ARTIFACT_ROUTES[toolName];
-  if (!route) return [];
+  const rawIds = output[spec.idField];
+  const titles =
+    spec.titleField && Array.isArray(output[spec.titleField]) ? (output[spec.titleField] as string[]) : [];
 
-  const kind = definition.produces[0];
-  const rawIds = output[route.idField];
-  const titles = Array.isArray(output.titles) ? (output.titles as string[]) : [];
-
-  // 多产出（如选题批量生成）：idField 是数组
+  // 多产出（如选题批量生成）：idField 是数组，标题按索引对应
   if (Array.isArray(rawIds)) {
-    return rawIds.map((rawId, index) => ({
-      kind,
-      id: Number(rawId),
-      title: titles[index] ?? `${definition.name} #${rawId}`,
-      href: `${route.hrefPrefix}${rawId}`,
-    }));
+    return rawIds
+      .map((rawId, index) => {
+        const id = Number(rawId);
+        if (!id) return null;
+        return {
+          kind: spec.kind,
+          id,
+          title: titles[index] ?? `${definition.name} #${id}`,
+          href: `${spec.hrefPrefix}${id}`,
+        };
+      })
+      .filter((item): item is ArtifactRef => item !== null);
   }
 
   // 单产出（如草稿、审校工单）
@@ -1993,10 +2090,10 @@ export function extractArtifacts(toolName: string, output: Record<string, unknow
   if (!id) return [];
   return [
     {
-      kind,
+      kind: spec.kind,
       id,
       title: titles[0] ?? `${definition.name} #${id}`,
-      href: `${route.hrefPrefix}${id}`,
+      href: `${spec.hrefPrefix}${id}`,
     },
   ];
 }
@@ -2734,6 +2831,7 @@ import { runAgentLoop } from "../lib/server/agent/agent-loop";
 import { persistAgentEvent } from "../lib/server/agent/persist";
 import { prisma } from "../lib/server/core/db";
 import { decryptText } from "../lib/server/core/security";
+import { shanghaiNow } from "../lib/server/core/time";
 ```
 
 在 `cookieHealthChecker` 函数之后加入：
@@ -2821,6 +2919,8 @@ async function executeAgentRun(run: {
           runId: run.id,
           role: message.role,
           content: message.content,
+          // createdAt 无库级默认值，必须显式传（全库一致约定）
+          createdAt: shanghaiNow(),
         },
       });
     },
