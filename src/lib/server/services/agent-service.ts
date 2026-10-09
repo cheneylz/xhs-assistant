@@ -49,11 +49,38 @@ export function deriveConversationTitle(text: string): string {
   return `${trimmed.slice(0, TITLE_MAX_LENGTH)}…`;
 }
 
-/** 新建会话 */
+/**
+ * 新建会话。
+ *
+ * createdAt / updatedAt 均无库级默认值，必须显式传（全库一致约定）。
+ * updatedAt 刻意不用 Prisma 的 @updatedAt —— 那会按真实 UTC 时钟填充，
+ * 与全库「朴素上海墙钟」约定差 8 小时。
+ */
 export async function createConversation(userId: number, title = "新任务"): Promise<AgentConversation> {
+  const now = shanghaiNow();
   return prisma.agentConversation.create({
-    // createdAt 无库级默认值，必须显式传（全库一致约定）
-    data: { userId, title, status: "idle", createdAt: shanghaiNow() },
+    data: { userId, title, status: "idle", createdAt: now, updatedAt: now },
+  });
+}
+
+/**
+ * 更新会话状态（并同步刷新 updatedAt）。
+ *
+ * 调用方一律走这个函数，不要直接 prisma.agentConversation.update ——
+ * 否则会漏掉 updatedAt，导致按 updated_at 排序的会话列表不再反映真实活跃度。
+ */
+export async function updateConversationStatus(options: {
+  conversationId: number;
+  status: string;
+  title?: string;
+}): Promise<void> {
+  await prisma.agentConversation.update({
+    where: { id: options.conversationId },
+    data: {
+      status: options.status,
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      updatedAt: shanghaiNow(),
+    },
   });
 }
 
