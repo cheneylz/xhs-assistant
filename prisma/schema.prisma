@@ -643,6 +643,9 @@ model AgentConversation {
   createdAt DateTime @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  messages AgentMessage[]
+  runs     AgentRun[]
+
   @@index([userId, status])
   @@map("agent_conversations")
 }
@@ -658,6 +661,8 @@ model AgentMessage {
   toolCallId     String?  @map("tool_call_id")
   tokenUsage     Json?    @map("token_usage")
   createdAt      DateTime @map("created_at")
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, id])
   @@map("agent_messages")
@@ -679,6 +684,8 @@ model AgentRun {
   startedAt        DateTime? @map("started_at")
   finishedAt       DateTime? @map("finished_at")
   createdAt        DateTime  @map("created_at")
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
   @@map("agent_runs")
