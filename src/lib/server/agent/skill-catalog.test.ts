@@ -9,12 +9,12 @@ describe("SKILL_CATALOG（技能目录）", () => {
   it("包含全部 6 个预置技能", () => {
     const keys = SKILL_CATALOG.map((item) => item.skillKey).sort();
     expect(keys).toEqual([
-      "content.notePack",
-      "hot.refresh",
-      "review.submit",
-      "schedule.recommend",
-      "script.generate",
-      "topic.generate",
+      "content_note_pack",
+      "hot_refresh",
+      "review_submit",
+      "schedule_recommend",
+      "script_generate",
+      "topic_generate",
     ]);
   });
 
@@ -39,8 +39,8 @@ describe("SKILL_CATALOG（技能目录）", () => {
   });
 
   it("findSkillDefinition 能按 skillKey 查到，未知 key 返回 undefined", () => {
-    expect(findSkillDefinition("topic.generate")?.name).toBe("选题生成");
-    expect(findSkillDefinition("not.exist")).toBeUndefined();
+    expect(findSkillDefinition("topic_generate")?.name).toBe("选题生成");
+    expect(findSkillDefinition("not_exist")).toBeUndefined();
   });
 
   it("6 个技能全部为 read 或 write，不含 publish（首期不开放发布）", () => {
@@ -51,20 +51,20 @@ describe("SKILL_CATALOG（技能目录）", () => {
 
   it("热点采集与文案类工具为 write，脚本与排期为 read（按函数体是否写库核定）", () => {
     const byKey = new Map(SKILL_CATALOG.map((item) => [item.skillKey, item]));
-    expect(byKey.get("hot.refresh")?.riskLevel).toBe("write");
-    expect(byKey.get("topic.generate")?.riskLevel).toBe("write");
-    expect(byKey.get("content.notePack")?.riskLevel).toBe("write");
-    expect(byKey.get("review.submit")?.riskLevel).toBe("write");
-    expect(byKey.get("script.generate")?.riskLevel).toBe("read");
-    expect(byKey.get("schedule.recommend")?.riskLevel).toBe("read");
+    expect(byKey.get("hot_refresh")?.riskLevel).toBe("write");
+    expect(byKey.get("topic_generate")?.riskLevel).toBe("write");
+    expect(byKey.get("content_note_pack")?.riskLevel).toBe("write");
+    expect(byKey.get("review_submit")?.riskLevel).toBe("write");
+    expect(byKey.get("script_generate")?.riskLevel).toBe("read");
+    expect(byKey.get("schedule_recommend")?.riskLevel).toBe("read");
   });
 
   it("声明 artifact 的技能，其 idField 必须真能在产出里找到（防字段名写错）", () => {
     // 抽取的协议字段名与 executeSkill 的 return 语句一一对应
     const expectedIdFields: Record<string, string> = {
-      "topic.generate": "suggestion_ids",
-      "content.notePack": "draft_id",
-      "review.submit": "review_id",
+      "topic_generate": "suggestion_ids",
+      "content_note_pack": "draft_id",
+      "review_submit": "review_id",
     };
     for (const [skillKey, idField] of Object.entries(expectedIdFields)) {
       const spec = findSkillDefinition(skillKey)?.artifact;
@@ -73,9 +73,9 @@ describe("SKILL_CATALOG（技能目录）", () => {
     }
   });
 
-  it("无产出的技能不声明 artifact，且 script.generate 因返回纯文本而无 id 可映射", () => {
-    expect(findSkillDefinition("hot.refresh")?.artifact).toBeUndefined();
-    expect(findSkillDefinition("schedule.recommend")?.artifact).toBeUndefined();
-    expect(findSkillDefinition("script.generate")?.artifact).toBeUndefined();
+  it("无产出的技能不声明 artifact，且 script_generate 因返回纯文本而无 id 可映射", () => {
+    expect(findSkillDefinition("hot_refresh")?.artifact).toBeUndefined();
+    expect(findSkillDefinition("schedule_recommend")?.artifact).toBeUndefined();
+    expect(findSkillDefinition("script_generate")?.artifact).toBeUndefined();
   });
 });

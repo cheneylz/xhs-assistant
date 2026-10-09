@@ -13,9 +13,9 @@ import { SKILL_CATALOG } from "./skill-catalog";
 
 /** skillKey → TypeBox 入参 schema */
 export const TOOL_SCHEMAS: Record<string, TSchema> = {
-  "hot.refresh": Type.Object({}, { description: "热点采集无需参数" }),
+  "hot_refresh": Type.Object({}, { description: "热点采集无需参数" }),
 
-  "topic.generate": Type.Object({
+  "topic_generate": Type.Object({
     count: Type.Optional(
       Type.Number({
         minimum: 1,
@@ -26,19 +26,19 @@ export const TOOL_SCHEMAS: Record<string, TSchema> = {
     ),
   }),
 
-  "content.notePack": Type.Object({
+  "content_note_pack": Type.Object({
     topic: Type.String({ minLength: 1, description: "选题标题，必填" }),
   }),
 
-  "review.submit": Type.Object({
+  "review_submit": Type.Object({
     draft_id: Type.Integer({ minimum: 1, description: "待审校的草稿 ID，必填" }),
   }),
 
-  "script.generate": Type.Object({
+  "script_generate": Type.Object({
     draft_id: Type.Integer({ minimum: 1, description: "生成视频脚本的草稿 ID，必填" }),
   }),
 
-  "schedule.recommend": Type.Object({
+  "schedule_recommend": Type.Object({
     platform_account_id: Type.Integer({ minimum: 1, description: "发布账号 ID，必填" }),
   }),
 };
@@ -63,4 +63,31 @@ export function getToolSchema(skillKey: string): TSchema {
   const schema = TOOL_SCHEMAS[skillKey];
   if (!schema) throw new Error(`技能 ${skillKey} 缺少 TypeBox schema`);
   return schema;
+}
+
+/**
+ * 供应商对工具名的硬约束：OpenAI 兼容接口的 `tools[].function.name` 只接受
+ * `^[a-zA-Z0-9_-]+$`（Anthropic 的工具名也是同一字符集）。
+ *
+ * 这是端到端验收实测撞到的：skillKey 原本用点号做命名空间（如 `topic.generate`），
+ * 发给模型时被 provider 直接 400 拒绝 —— "Invalid 'tools[0].function.name':
+ * string does not match pattern"。且失败发生在**请求阶段**，表现为模型返回
+ * stopReason="error"，日志里看着像「模型请求失败」，很难一眼看出真因是工具名非法。
+ * 因此在组装工具前提前断言，把运行时的 400 变成启动时可定位的报错。
+ */
+export const PROVIDER_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * 断言工具名可安全发给供应商。
+ * 不传参数时校验整个 SKILL_CATALOG（启动路径）；也可传入名称列表做单点校验。
+ */
+export function assertToolNamesProviderSafe(names: string[] = SKILL_CATALOG.map((item) => item.skillKey)): void {
+  for (const name of names) {
+    if (!PROVIDER_TOOL_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `工具名「${name}」不符合供应商要求：仅允许字母、数字、下划线与连字符（${PROVIDER_TOOL_NAME_PATTERN}）。` +
+          `带点号等字符的名称会被模型接口以 400 拒绝。`,
+      );
+    }
+  }
 }

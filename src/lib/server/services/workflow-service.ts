@@ -144,9 +144,9 @@ export const PREBUILT_WORKFLOWS: WorkflowDefinition[] = [
     name: "标准内容生产流",
     description: "选题 → 文案 → 审校：一条内容的完整生产链路",
     steps: [
-      { id: "s1", skillKey: "topic.generate", name: "生成选题", params: { count: 5 } },
-      { id: "s2", skillKey: "content.notePack", name: "生成文案包", params: { topic: "{s1.titles.0}" } },
-      { id: "s3", skillKey: "review.submit", name: "内容审校", params: { draft_id: "{s2.draft_id}" } },
+      { id: "s1", skillKey: "topic_generate", name: "生成选题", params: { count: 5 } },
+      { id: "s2", skillKey: "content_note_pack", name: "生成文案包", params: { topic: "{s1.titles.0}" } },
+      { id: "s3", skillKey: "review_submit", name: "内容审校", params: { draft_id: "{s2.draft_id}" } },
     ],
   },
   {
@@ -154,10 +154,10 @@ export const PREBUILT_WORKFLOWS: WorkflowDefinition[] = [
     name: "热点追更流",
     description: "热点刷新 → 选题 → 文案 → 审校：快速追热点",
     steps: [
-      { id: "s1", skillKey: "hot.refresh", name: "刷新热点", params: {} },
-      { id: "s2", skillKey: "topic.generate", name: "生成选题", params: { count: 5 } },
-      { id: "s3", skillKey: "content.notePack", name: "生成文案包", params: { topic: "{s2.titles.0}" } },
-      { id: "s4", skillKey: "review.submit", name: "内容审校", params: { draft_id: "{s3.draft_id}" } },
+      { id: "s1", skillKey: "hot_refresh", name: "刷新热点", params: {} },
+      { id: "s2", skillKey: "topic_generate", name: "生成选题", params: { count: 5 } },
+      { id: "s3", skillKey: "content_note_pack", name: "生成文案包", params: { topic: "{s2.titles.0}" } },
+      { id: "s4", skillKey: "review_submit", name: "内容审校", params: { draft_id: "{s3.draft_id}" } },
     ],
   },
   {
@@ -165,9 +165,9 @@ export const PREBUILT_WORKFLOWS: WorkflowDefinition[] = [
     name: "批量生产流",
     description: "批量选题 → 首个选题文案 → 审校（批量扩展后续）",
     steps: [
-      { id: "s1", skillKey: "topic.generate", name: "批量生成选题", params: { count: 10 } },
-      { id: "s2", skillKey: "content.notePack", name: "生成文案包", params: { topic: "{s1.titles.0}" } },
-      { id: "s3", skillKey: "review.submit", name: "内容审校", params: { draft_id: "{s2.draft_id}" } },
+      { id: "s1", skillKey: "topic_generate", name: "批量生成选题", params: { count: 10 } },
+      { id: "s2", skillKey: "content_note_pack", name: "生成文案包", params: { topic: "{s1.titles.0}" } },
+      { id: "s3", skillKey: "review_submit", name: "内容审校", params: { draft_id: "{s2.draft_id}" } },
     ],
   },
 ];

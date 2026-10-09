@@ -104,7 +104,7 @@ export function pruneByCharBudget<T>(messages: T[], charBudget: number): T[] {
 /**
  * 工具结果摘要：把**每一个**数组值截断到 limit 条，并给出各自的原始条数。
  *
- * 为什么必须遍历所有数组键：topic.generate 同时返回 suggestion_ids 与 titles，
+ * 为什么必须遍历所有数组键：topic_generate 同时返回 suggestion_ids 与 titles，
  * 只截第一个会出现「10 个 id 配 20 个标题」的错位，模型会把标题张冠李戴。
  * 非数组键原样保留。
  *

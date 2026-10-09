@@ -100,7 +100,7 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
   it("不留下孤立的 toolResult（其 assistant 已被裁掉时一并裁掉）", () => {
     const messages = [
       systemMsg("系统"),
-      assistantWithToolCall("call-1", "topic.generate"),
+      assistantWithToolCall("call-1", "topic_generate"),
       toolResult("call-1", "A".repeat(2000)),
       userMsg("新问题"),
     ];
@@ -117,7 +117,7 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
     // 于是切点停在 toolResult 上，必须靠修正循环推进。
     const messages = [
       systemMsg(""),
-      assistantWithTextAndToolCall("call-1", "topic.generate", "字".repeat(50)),
+      assistantWithTextAndToolCall("call-1", "topic_generate", "字".repeat(50)),
       toolResult("call-1", "A".repeat(500)),
       userMsg("短"),
     ];
@@ -139,7 +139,7 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
   it("保留 assistant 工具调用时其 toolResult 也保留", () => {
     const messages = [
       systemMsg("系统"),
-      assistantWithToolCall("call-1", "topic.generate"),
+      assistantWithToolCall("call-1", "topic_generate"),
       toolResult("call-1", "结果内容"),
     ];
     const result = pruneByCharBudget(messages, 10_000);
@@ -179,7 +179,7 @@ describe("summarizeToolResult（工具结果摘要）", () => {
     expect(summary.items).toHaveLength(3);
   });
 
-  it("多个数组键同时截断，且各自给出原始条数（topic.generate 场景）", () => {
+  it("多个数组键同时截断，且各自给出原始条数（topic_generate 场景）", () => {
     const summary = summarizeToolResult({
       suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
       titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),

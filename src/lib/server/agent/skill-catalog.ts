@@ -54,7 +54,7 @@ export interface SkillDefinition {
 
 export const SKILL_CATALOG: SkillDefinition[] = [
   {
-    skillKey: "hot.refresh",
+    skillKey: "hot_refresh",
     name: "热点采集",
     description: "采集全站热点榜单（30 分钟任务的手动版）",
     paramsSchema: { type: "object", properties: {} },
@@ -78,7 +78,7 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
     riskLevel: "write",
   },
   {
-    skillKey: "topic.generate",
+    skillKey: "topic_generate",
     name: "选题生成",
     description: "基于知识库+热点+爆款结构生成选题列表",
     paramsSchema: { type: "object", properties: { count: { type: "number", default: 5 } } },
@@ -108,7 +108,7 @@ description: 基于账号知识库、实时热点与爆款拆解结构，生成�
     },
   },
   {
-    skillKey: "content.notePack",
+    skillKey: "content_note_pack",
     name: "文案包生成",
     description: "生成标题/正文/标签/CTA 完整文案包并保存草稿",
     paramsSchema: { type: "object", properties: { topic: { type: "string" } } },
@@ -137,7 +137,7 @@ description: 围绕选题生成标题备选、正文、话题标签与行动引�
     },
   },
   {
-    skillKey: "review.submit",
+    skillKey: "review_submit",
     name: "内容审校",
     description: "双层检测 + 三道门禁审校",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
@@ -165,7 +165,7 @@ description: 对草稿执行合规规则检测与三道门禁审校
     },
   },
   {
-    skillKey: "script.generate",
+    skillKey: "script_generate",
     name: "视频脚本生成",
     description: "基于草稿文案生成短视频脚本",
     paramsSchema: { type: "object", properties: { draft_id: { type: "number" } } },
@@ -189,7 +189,7 @@ description: 将图文草稿转化为 30-60 秒口播分镜脚本
     riskLevel: "read",
   },
   {
-    skillKey: "schedule.recommend",
+    skillKey: "schedule_recommend",
     name: "智能排期",
     description: "基于历史数据推荐发布时间",
     paramsSchema: { type: "object", properties: { platform_account_id: { type: "number" } } },
@@ -232,7 +232,7 @@ export interface SkillContext {
 export async function executeSkill(skillKey: string, params: Record<string, unknown>, context: SkillContext): Promise<Record<string, unknown>> {
   const { userId, textClient, modelConfig, apiKey } = context;
   switch (skillKey) {
-    case "hot.refresh": {
+    case "hot_refresh": {
       const account = await prisma.platformAccount.findFirst({ where: { userId, platform: "xhs", subType: "pc" }, orderBy: { id: "asc" } });
       if (!account) throw new Error("未绑定 PC 账号，无法刷新热点");
       const cookieVersion = await prisma.accountCookieVersion.findFirst({
@@ -247,7 +247,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       });
       return { collected: result.collected };
     }
-    case "topic.generate": {
+    case "topic_generate": {
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成选题");
       const count = Math.max(1, Math.min(Number(params.count) || 5, 20));
       const { items } = await generateSuggestions({
@@ -263,7 +263,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
         count: items.length,
       };
     }
-    case "content.notePack": {
+    case "content_note_pack": {
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成文案包");
       const topic = String(params.topic ?? "").trim();
       if (!topic) throw new Error("缺少选题（topic）参数");
@@ -281,7 +281,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       });
       return { draft_id: draft.id, titles: pack.titles, tags: pack.tags };
     }
-    case "review.submit": {
+    case "review_submit": {
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
@@ -297,7 +297,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       });
       return { review_id: job.id, gate_status: job.gateStatus, status: job.status };
     }
-    case "script.generate": {
+    case "script_generate": {
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成脚本");
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
@@ -312,7 +312,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       });
       return { script };
     }
-    case "schedule.recommend": {
+    case "schedule_recommend": {
       const accountId = Number(params.platform_account_id);
       if (!accountId) throw new Error("缺少发布账号（platform_account_id）参数");
       const { recommendSchedules } = await import("../services/schedule-service");

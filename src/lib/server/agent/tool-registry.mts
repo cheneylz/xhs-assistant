@@ -8,7 +8,7 @@
  */
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { executeSkill, SKILL_CATALOG, type SkillContext } from "./skill-catalog";
-import { assertSchemasComplete, getToolSchema } from "./tool-schemas";
+import { assertSchemasComplete, assertToolNamesProviderSafe, getToolSchema } from "./tool-schemas";
 
 /** 工具返回值中文本内容的长度上限（超出则截断，避免撑爆上下文） */
 const TOOL_TEXT_LIMIT = 20_000;
@@ -33,6 +33,9 @@ function toModelText(output: Record<string, unknown>): string {
 /** 为目录中的每个技能生成 AgentTool */
 export function buildAgentTools(context: SkillContext): AgentTool[] {
   assertSchemasComplete();
+  // 工具名会原样进入供应商请求体：非法名称会被接口 400 拒绝，且表现为「模型请求失败」，
+  // 排查成本很高（实测踩过，见 tool-schemas.ts 的 PROVIDER_TOOL_NAME_PATTERN 注释）
+  assertToolNamesProviderSafe();
 
   return SKILL_CATALOG.map((definition) => ({
     name: definition.skillKey,

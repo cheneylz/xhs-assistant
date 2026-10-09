@@ -10,14 +10,14 @@ describe("serializeEventForDb（事件序列化）", () => {
     const serialized = serializeEventForDb({
       type: "tool_execution_end",
       toolCallId: "call-1",
-      toolName: "topic.generate",
+      toolName: "topic_generate",
       result: { suggestion_ids: [1, 2] },
       isError: false,
       durationMs: 1200,
     });
     expect(serialized.type).toBe("tool_execution_end");
     const payload = serialized.payload as Record<string, unknown>;
-    expect(payload.toolName).toBe("topic.generate");
+    expect(payload.toolName).toBe("topic_generate");
     expect(payload.durationMs).toBe(1200);
   });
 
@@ -47,8 +47,8 @@ describe("serializeEventForDb（事件序列化）", () => {
 });
 
 describe("extractArtifacts（工件抽取）", () => {
-  it("topic.generate 的产出被识别为 topic 工件", () => {
-    const artifacts = extractArtifacts("topic.generate", {
+  it("topic_generate 的产出被识别为 topic 工件", () => {
+    const artifacts = extractArtifacts("topic_generate", {
       suggestion_ids: [11, 12],
       titles: ["露营选题A", "露营选题B"],
     });
@@ -56,8 +56,8 @@ describe("extractArtifacts（工件抽取）", () => {
     expect(artifacts[0]).toMatchObject({ kind: "topic", id: 11, title: "露营选题A" });
   });
 
-  it("content.notePack 的产出被识别为 draft 工件并带跳转链接", () => {
-    const artifacts = extractArtifacts("content.notePack", {
+  it("content_note_pack 的产出被识别为 draft 工件并带跳转链接", () => {
+    const artifacts = extractArtifacts("content_note_pack", {
       draft_id: 128,
       titles: ["标题A"],
     });
@@ -69,20 +69,20 @@ describe("extractArtifacts（工件抽取）", () => {
     });
   });
 
-  it("review.submit 的产出被识别为 review 工件", () => {
-    const artifacts = extractArtifacts("review.submit", { review_id: 7, gate_status: "pass" });
+  it("review_submit 的产出被识别为 review 工件", () => {
+    const artifacts = extractArtifacts("review_submit", { review_id: 7, gate_status: "pass" });
     expect(artifacts[0]).toMatchObject({ kind: "review", id: 7 });
   });
 
   it("无产出的工具返回空数组", () => {
-    expect(extractArtifacts("hot.refresh", { collected: 30 })).toEqual([]);
+    expect(extractArtifacts("hot_refresh", { collected: 30 })).toEqual([]);
   });
 
-  it("script.generate 无 artifact 声明，返回空数组（返回纯文本无 id 可映射）", () => {
-    expect(extractArtifacts("script.generate", { script: "开场钩子…" })).toEqual([]);
+  it("script_generate 无 artifact 声明，返回空数组（返回纯文本无 id 可映射）", () => {
+    expect(extractArtifacts("script_generate", { script: "开场钩子…" })).toEqual([]);
   });
 
   it("未知工具返回空数组", () => {
-    expect(extractArtifacts("not.exist", {})).toEqual([]);
+    expect(extractArtifacts("not_exist", {})).toEqual([]);
   });
 });

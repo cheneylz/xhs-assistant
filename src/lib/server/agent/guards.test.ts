@@ -6,25 +6,25 @@ import { describe, expect, it } from "vitest";
 import { checkToolAllowed, createFailureTracker } from "./guards";
 
 describe("checkToolAllowed（工具准入）", () => {
-  it("read 级工具放行（hot.refresh 按代码实证为 write，此处断言其放行）", () => {
-    expect(checkToolAllowed("hot.refresh")).toEqual({ allowed: true });
+  it("read 级工具放行（hot_refresh 按代码实证为 write，此处断言其放行）", () => {
+    expect(checkToolAllowed("hot_refresh")).toEqual({ allowed: true });
   });
 
   it("write 级工具放行（产出进工件面板待验收）", () => {
-    expect(checkToolAllowed("content.notePack")).toEqual({ allowed: true });
+    expect(checkToolAllowed("content_note_pack")).toEqual({ allowed: true });
   });
 
   it("未知工具 fail-closed：阻断并给出可读原因", () => {
-    const result = checkToolAllowed("not.exist");
+    const result = checkToolAllowed("not_exist");
     expect(result.allowed).toBe(false);
     expect(result.reason).toBeTruthy();
-    expect(result.reason).toContain("not.exist");
+    expect(result.reason).toContain("not_exist");
   });
 
   it("不在目录里的自定义技能名同样被阻断（Agent 只暴露目录内工具）", () => {
-    const result = checkToolAllowed("my.custom.skill");
+    const result = checkToolAllowed("my_custom_skill");
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("my.custom.skill");
+    expect(result.reason).toContain("my_custom_skill");
   });
 
   it("publish 级工具被阻断（首期不开放发布）", () => {
@@ -32,7 +32,7 @@ describe("checkToolAllowed（工具准入）", () => {
     // 通过 monkey-patch 目录不可行，改为断言所有目录技能均非 publish，
     // 并单独验证 publish 分支的返回形状由实现保证。
     // 若未来加入 publish 级技能，本测试应替换为对该技能的直接断言。
-    expect(checkToolAllowed("topic.generate").allowed).toBe(true);
+    expect(checkToolAllowed("topic_generate").allowed).toBe(true);
   });
 });
 

@@ -52,6 +52,7 @@ xhs-assistant 当前已是具备完整运营能力的平台：148 个 REST 路�
 | D15 | worker 唤醒 | **3 秒轮询** | Agent 任务本身耗时 30s+，3s 延迟可忽略，不引入 NOTIFY |
 | D16 | docs 目录 | **本次建立** | `docs/` 作为总代码文档落点，本设计文档放 `docs/superpowers/specs/` |
 | D17 | ESM 兼容方案 | **改用 `.mts` 入口** | R1 实测失败后确定。Pi 包 `exports` 无 `require`/`default` 条件，CJS 解析阶段即失败。`.mts` 入口让 tsx 走 ESM，爆炸半径限于 5 个文件（见 §4.3）|
+| D18 | 工具命名 | **skillKey 用下划线，不用点号** | 端到端验收实测撞到：OpenAI 兼容接口的 `tools[].function.name` 只接受 `^[a-zA-Z0-9_-]+$`，点号（原 `topic.generate`）被 provider 直接 400 拒绝，且表现为「模型请求失败」，极难定位。改为 `topic_generate` 后**全系统只有一个名字**（代码 / `agent_tool_calls.tool_name` / 发给供应商的请求体完全一致），无映射层、无两套需手工同步的元数据 |
 
 ---
 
@@ -506,7 +507,7 @@ export interface SkillDefinition {
 
 `produces` 只声明"产出什么类型"，无法表达"从返回值的哪个字段取 id、怎么拼跳转链接"。而这些信息是必需的，于是必须**另建一张 `skillKey → {idField, hrefPrefix}` 映射表** —— 那就是同一套工具的第二份元数据，两表必须手工保持同步，且失配时静默返回空工件、不报错。
 
-把配方直接放进 catalog 条目，**单一真相源**，失配不可能发生。`schedule.recommend` 与 `hot.refresh` 无产出，不填即可。
+把配方直接放进 catalog 条目，**单一真相源**，失配不可能发生。`schedule_recommend` 与 `hot_refresh` 无产出，不填即可。
 
 护栏语义：
 
@@ -522,18 +523,18 @@ export interface SkillDefinition {
 
 | skillKey | 名称 | risk | 实证依据 | artifact |
 |---|---|---|---|---|
-| `hot.refresh` | 热点采集 | **write** | `hotTopic.createMany` + `deleteMany` | — |
-| `topic.generate` | 选题生成 | write | `topicSuggestion.create` | `{kind:"topic", idField:"suggestion_ids", titleField:"titles", hrefPrefix:"/platforms/xhs/planner?id="}` ← 多产出 |
-| `content.notePack` | 文案包生成 | write | `aiDraft.create` | `{kind:"draft", idField:"draft_id", titleField:"titles", hrefPrefix:"/platforms/xhs/drafts?id="}` |
-| `review.submit` | 内容审校 | write | `reviewJob.create` + `reviewFinding.createMany` | `{kind:"review", idField:"review_id", hrefPrefix:"/platforms/xhs/review?id="}` |
-| `script.generate` | 视频脚本生成 | **read** | 无 prisma 调用 | — |
-| `schedule.recommend` | 发布时间推荐 | **read** | 仅 `findFirst`/`findMany` | — |
+| `hot_refresh` | 热点采集 | **write** | `hotTopic.createMany` + `deleteMany` | — |
+| `topic_generate` | 选题生成 | write | `topicSuggestion.create` | `{kind:"topic", idField:"suggestion_ids", titleField:"titles", hrefPrefix:"/platforms/xhs/planner?id="}` ← 多产出 |
+| `content_note_pack` | 文案包生成 | write | `aiDraft.create` | `{kind:"draft", idField:"draft_id", titleField:"titles", hrefPrefix:"/platforms/xhs/drafts?id="}` |
+| `review_submit` | 内容审校 | write | `reviewJob.create` + `reviewFinding.createMany` | `{kind:"review", idField:"review_id", hrefPrefix:"/platforms/xhs/review?id="}` |
+| `script_generate` | 视频脚本生成 | **read** | 无 prisma 调用 | — |
+| `schedule_recommend` | 发布时间推荐 | **read** | 仅 `findFirst`/`findMany` | — |
 
 **三处对早期设计的修正（逐函数核实源码后得出，非推测）：**
 
-- **`hot.refresh` 由 `read` 改为 `write`**：核实 `collectHotTopicsForUser` 内有 `hotTopic.createMany`（写快照）与 `hotTopic.deleteMany`（清上一批）。原标 `read` 会让 Task 7 给它 `replay: "safe"`、并在面向模型的工具目录里标"［只读］"，两处都是误导。
-- **`schedule.recommend` 由 `write` 改为 `read`**：核实 `recommendSchedules`（`schedule-service.ts:85`）函数体内只有 `platformAccount.findFirst` 与 `publishJob.findMany` 两种**只读**操作。（该文件第 181 行的 `scheduleSuggestion.create` 属于另一个函数。）
-- **`script.generate` 由 `write` 改为 `read`，且不声明 artifact**：`generateVideoScript` 无任何 prisma 调用，只读草稿 + 调 LLM。同时它返回 `{ script: string }` —— 一段没有数据库行的文本，而 `ArtifactRef.id` 是 `number`，无法映射，故不声明 artifact（脚本内容直接在对话流中呈现）。待将来脚本落库后再补。
+- **`hot_refresh` 由 `read` 改为 `write`**：核实 `collectHotTopicsForUser` 内有 `hotTopic.createMany`（写快照）与 `hotTopic.deleteMany`（清上一批）。原标 `read` 会让 Task 7 给它 `replay: "safe"`、并在面向模型的工具目录里标"［只读］"，两处都是误导。
+- **`schedule_recommend` 由 `write` 改为 `read`**：核实 `recommendSchedules`（`schedule-service.ts:85`）函数体内只有 `platformAccount.findFirst` 与 `publishJob.findMany` 两种**只读**操作。（该文件第 181 行的 `scheduleSuggestion.create` 属于另一个函数。）
+- **`script_generate` 由 `write` 改为 `read`，且不声明 artifact**：`generateVideoScript` 无任何 prisma 调用，只读草稿 + 调 LLM。同时它返回 `{ script: string }` —— 一段没有数据库行的文本，而 `ArtifactRef.id` 是 `number`，无法映射，故不声明 artifact（脚本内容直接在对话流中呈现）。待将来脚本落库后再补。
 
 **教训记录**：`riskLevel` 必须按**函数体内是否真有写操作**逐一定，不能从技能名或描述推断。最初 6 个里标错了 3 个。
 
@@ -581,9 +582,9 @@ node_modules/typebox/build/type/*/schema.d.mts → export interface TSchema {}
 
 | 场景 | 旧 `paramsSchema` 的 `Value.Check` | 新 TypeBox schema |
 |---|---|---|
-| `content.notePack` 缺必填 `topic` | `true` ← **静默放行** | `false` ← 正确拒绝 |
-| `review.submit` 传 `draft_id: -1` | `true` ← **静默放行** | `false` ← 正确拒绝 |
-| `topic.generate` 传 `count: 999` | `true` | `false` |
+| `content_note_pack` 缺必填 `topic` | `true` ← **静默放行** | `false` ← 正确拒绝 |
+| `review_submit` 传 `draft_id: -1` | `true` ← **静默放行** | `false` ← 正确拒绝 |
+| `topic_generate` 传 `count: 999` | `true` | `false` |
 
 `paramsSchema` 的定位是**给技能库页面看的展示元数据**，TypeBox schema 才是**执行时的强制边界**。两者刻意分工，前者保持宽松、后者收紧。
 
@@ -591,7 +592,7 @@ node_modules/typebox/build/type/*/schema.d.mts → export interface TSchema {}
 
 **顺带确认的一条依赖事实**：`pi-agent-core` 声明的依赖是 `"typebox": "1.3.27"` —— 与本项目根依赖**同包同版本**。已实测 `AgentTool["parameters"] = getToolSchema(skillKey)` 双向类型兼容，因此 Task 7 无需任何 `as never` 断言。
 
-**已知未收紧项**：6 个 schema 均未设 `additionalProperties: false`，故 `hot.refresh` 接受 `{}` 也接受 `{foo: 1}`。P0 只约束"必填参数"，严格拒绝未知键留待后续按需收紧。
+**已知未收紧项**：6 个 schema 均未设 `additionalProperties: false`，故 `hot_refresh` 接受 `{}` 也接受 `{foo: 1}`。P0 只约束"必填参数"，严格拒绝未知键留待后续按需收紧。
 
 ```ts
 // src/lib/server/agent/tool-registry.ts
@@ -618,10 +619,10 @@ const topicGenerateParams = Type.Object({
 ### 6.6 工具装配示例
 
 ```ts
-// src/lib/server/agent/tool-registry.ts
+// src/lib/server/agent/tool-registry.mts（含 Pi 依赖，必须是 .mts，见 D17）
 function buildAgentTool(def: SkillDefinition, ctx: SkillContext): AgentTool {
   return {
-    name: def.skillKey,
+    name: def.skillKey,   // 注意：skillKey 必须满足供应商的 ^[a-zA-Z0-9_-]+$（见 D18）
     label: def.name,
     description: def.description,
     parameters: TYPED_SCHEMAS[def.skillKey],   // TypeBox schema
@@ -640,6 +641,9 @@ function buildAgentTool(def: SkillDefinition, ctx: SkillContext): AgentTool {
 ```
 
 `replay` 语义：`"safe"` 表示该工具的副作用可安全重放（读操作）；`"never"` 表示不可重放（写操作，如已生成草稿）。
+
+**工具名的硬约束（D18）**：`name` 会原样进入请求体的 `tools[].function.name`，只能包含字母、数字、下划线与连字符。
+`buildAgentTools` 启动时调用 `assertToolNamesProviderSafe()` 断言，把运行时的 provider 400 提前成启动期可定位的报错。
 
 ---
 
@@ -1133,6 +1137,44 @@ pi-ai 的 `detectCompat` 匹配规则（读 `node_modules/@earendil-works/pi-ai/
 | **P2 完善** | 护栏细化 → 崩溃恢复 → 中止功能 → 测试补齐 → 文档 | 生产可用；测试覆盖核心路径 |
 
 **P0 必须先做**：它验证 R1/R2/R3 三个风险，任何一个不成立都要调整方案。
+
+### 12.1 P0 验收记录（2026-10-09）
+
+验收脚本：`src/scripts/agent-smoke.ts`（保留在仓库中作为回归工具）；运行环境：真实模型 + 运行中的 worker。
+
+| 项 | 实测值 |
+|---|---|
+| 会话 ID / Run ID | 15 / 18（taskId 13）|
+| Run 最终状态 | `succeeded` |
+| 事件序列 | `agent_start → turn_start → … → tool_execution_end → … → status → agent_end` |
+| 工具调用（stepIndex:tool:status）| `0:hot_refresh:succeeded`、`1:topic_generate:succeeded` |
+| Run.tokensUsed / stepCount | 4827 / 2 |
+| 业务表变化 | `topic_suggestions` 2 → 4；`ai_drafts` 0 → 0（本次未调用 `content_note_pack`）|
+| `agent_events.message_end` 载荷 | 含 `usage`（`serializeEventForDb` 已保留，token 明细可从库复算）|
+| 失败路径 Run（模型地址不可达）| `failed` / `model_error`，绑定的 Task 亦为 `failed` |
+| 崩溃清扫 | 清扫 1 条，Run 与 Task 同为 `failed`（`worker_restart`）|
+| 实测模型 | provider `openai-compatible` / modelName `deepseek-flash` / baseUrl `https://api.deepseek.com` |
+
+> 工具调用顺序由模型自行决定，两次验收分别出现 `topic_generate → hot_refresh` 与 `hot_refresh → topic_generate`，均通过 —— 说明循环不是硬编码顺序，而是真的按模型决策驱动。
+
+**验收结论：全部通过。**
+
+**验收过程中发现并修复的问题**
+
+| 问题 | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| **工具名非法（D18）** | Run 记为 `failed`，`errorType=model_error`，事件里只有 `400: Invalid 'tools[0].function.name'` | skillKey 用点号命名空间（`topic.generate`），而 OpenAI 兼容接口的 `tools[].function.name` 只接受 `^[a-zA-Z0-9_-]+$`。失败在**请求阶段**，表现为「模型请求失败」，从日志很难看出真因是工具名 | 6 个 skillKey 改为下划线形式（`topic_generate` / `hot_refresh` / `content_note_pack` / `review_submit` / `script_generate` / `schedule_recommend`），并新增 `assertToolNamesProviderSafe()` 启动断言（见 D18、§6.6） |
+
+**这次验收验证到位的两条关键设计**
+
+1. **失败判定 fail-closed 生效**：provider 400 没有抛异常，只把 `stopReason` 置为 `error`；循环正确地记为 `failed/model_error` 而非 `succeeded`。若沿用「try/catch 判成功」的写法，这次的两个失败 Run 都会被记成成功。
+2. **终态结论事件落在 `agent_end` 之前**：`message_end` 的 `errorMessage` 会被 `serializeEventForDb` 剔除，`agent_runs` 也没有消息字段 —— 那条 `status` 事件是**唯一**记录「为什么失败」的可读文本，本次正是靠它定位到工具名问题。
+
+**已知遗留（登记为 P1）**
+
+- 工作区副作用：验收的 `topic.generate` 会真实写入 `topic_suggestions`（这是被断言的产品产出，脚本不清理）；`hot_refresh` 会重算 `hot_topics` 快照。两者都是工具的正常行为。
+- `agent_tool_calls` 只覆盖「正常执行」与「护栏阻断」两类；参数校验失败与 `length` 截断导致的失败调用不进该表（Pi 在这两种情况下不走任何钩子，只发 `tool_execution_end` 事件），需 P1 由事件回填。
+- 自定义技能（`skill_registry`）当前**不可作为工具调用**：`checkToolAllowed` 是 fail-closed 的，不在 `SKILL_CATALOG` 里的名称一律阻断。P1 放开自定义技能时需同时把其 skillKey 纳入 D18 的名称断言。
 
 ---
 

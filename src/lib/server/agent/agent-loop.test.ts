@@ -181,8 +181,8 @@ function baseOptions(overrides: Partial<RunAgentLoopOptions> = {}) {
 describe("buildToolCatalogText（工具目录文本）", () => {
   it("列出全部 6 个技能的 skillKey 与描述", () => {
     const text = buildToolCatalogText();
-    expect(text).toContain("topic.generate");
-    expect(text).toContain("content.notePack");
+    expect(text).toContain("topic_generate");
+    expect(text).toContain("content_note_pack");
     expect(text).toContain("选题生成");
   });
 });
@@ -264,16 +264,16 @@ describe("runAgentLoop（循环编排）", () => {
   it("工具调用落库为 running → succeeded，并按 stepIndex 记录", async () => {
     const items = Array.from({ length: 3 }, (_, i) => i + 1);
     const { fake, options } = baseOptions({
-      tools: [createFakeTool("topic.generate", { suggestion_ids: items, titles: ["A", "B", "C"] }, Type.Object({ count: Type.Optional(Type.Number()) }))],
+      tools: [createFakeTool("topic_generate", { suggestion_ids: items, titles: ["A", "B", "C"] }, Type.Object({ count: Type.Optional(Type.Number()) }))],
       fakeStreamFn: createScriptedStreamFn([
-        assistantToolCall("call-1", "topic.generate", { count: 3 }),
+        assistantToolCall("call-1", "topic_generate", { count: 3 }),
         assistantText("已完成"),
       ]),
     });
     const result = await runAgentLoop(options);
 
     expect(fake.started).toHaveLength(1);
-    expect(fake.started[0]).toMatchObject({ stepIndex: 0, toolName: "topic.generate", status: "running", params: { count: 3 } });
+    expect(fake.started[0]).toMatchObject({ stepIndex: 0, toolName: "topic_generate", status: "running", params: { count: 3 } });
     expect(fake.finalized).toHaveLength(1);
     expect(fake.finalized[0]).toMatchObject({ id: 1, status: "succeeded" });
     expect(result.stepCount).toBe(1);
@@ -284,14 +284,14 @@ describe("runAgentLoop（循环编排）", () => {
   it("结果摘要只改模型可见的 content，details 保持完整（多数组键同时截断）", async () => {
     const { fake, options } = baseOptions({
       tools: [
-        createFakeTool("topic.generate", {
+        createFakeTool("topic_generate", {
           suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
           titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),
           count: 20,
         }),
       ],
       fakeStreamFn: createScriptedStreamFn([
-        assistantToolCall("call-1", "topic.generate", {}),
+        assistantToolCall("call-1", "topic_generate", {}),
         assistantText("已完成"),
       ]),
     });
@@ -322,16 +322,16 @@ describe("runAgentLoop（循环编排）", () => {
 
   it("护栏阻断的调用落一条 blocked 记录，且不中断整体流程", async () => {
     const { fake, options } = baseOptions({
-      tools: [createFakeTool("not.exist", {})],
+      tools: [createFakeTool("not_exist", {})],
       fakeStreamFn: createScriptedStreamFn([
-        assistantToolCall("call-1", "not.exist", {}),
+        assistantToolCall("call-1", "not_exist", {}),
         assistantText("该工具不可用，已放弃"),
       ]),
     });
     const result = await runAgentLoop(options);
 
     expect(fake.started).toHaveLength(1);
-    expect(fake.started[0]).toMatchObject({ toolName: "not.exist", status: "blocked", errorType: "guard_blocked" });
+    expect(fake.started[0]).toMatchObject({ toolName: "not_exist", status: "blocked", errorType: "guard_blocked" });
     // 阻断走的是 immediate 分支，不会进 afterToolCall
     expect(fake.finalized).toHaveLength(0);
     expect(result.status).toBe("succeeded");
