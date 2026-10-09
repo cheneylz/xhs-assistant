@@ -43,8 +43,9 @@ import {
 } from "../lib/server/services/agent-service.ts";
 // 以下三个是 .mts（含 Pi 依赖）：ESM 不做扩展名推断，必须显式写后缀
 import { buildAgentTools } from "../lib/server/agent/tool-registry.mts";
-import { buildPiModel } from "../lib/server/agent/model-bridge.mts";
+import { buildPiModel, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from "../lib/server/agent/model-bridge.mts";
 import { runAgentLoop } from "../lib/server/agent/agent-loop.mts";
+import { fetchModelCapabilities } from "../lib/server/agent/model-capabilities.ts";
 import { persistAgentEvent } from "../lib/server/agent/persist.ts";
 import { prisma } from "../lib/server/core/db.ts";
 import { decryptText } from "../lib/server/core/security.ts";
@@ -208,13 +209,27 @@ async function executeAgentRun(run: AgentRun): Promise<void> {
   // 它会由 runAgentLoop 的 prompt() 追加，若同时 seed 进历史就会变成两条相同的提问。
   const history = await listMessages(run.conversationId, 100, triggerMessage.id);
 
+  // 取模型真实上限（/models）。取不到就回退保守默认值 —— 但必须显式告警：
+  // 回退意味着守卫用的是硬编码 128k，若该模型真实窗口更小，请求就会被 provider 400 拒绝。
+  const capabilities = await fetchModelCapabilities({
+    baseUrl: modelConfig.baseUrl,
+    apiKey,
+    modelName: modelConfig.modelName,
+  });
+  if (!capabilities) {
+    console.warn(
+      `[worker] 未能探测模型上限（${modelConfig.modelName} @ ${modelConfig.baseUrl}），` +
+        `回退保守默认值 contextWindow=${DEFAULT_CONTEXT_WINDOW} maxTokens=${DEFAULT_MAX_TOKENS}`,
+    );
+  }
+
   const result = await runAgentLoop({
     runId: run.id,
     conversationId: run.conversationId,
     userId: run.userId,
     userMessage: triggerMessage.content,
     historyMessages: history,
-    model: buildPiModel(modelConfig),
+    model: buildPiModel(modelConfig, capabilities),
     apiKey,
     tools: buildAgentTools({
       userId: run.userId,

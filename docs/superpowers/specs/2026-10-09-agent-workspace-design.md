@@ -843,6 +843,38 @@ export function buildPiModel(cfg: ModelConfigLike): Model<"openai-completions"> 
 }
 ```
 
+**实现修正（2026-10-09，P0 验收后排查发现）**：上面两个值是**硬编码**，与 provider 的真实能力脱节，已改为从 `/models` 探测（见 §8.1.1）。
+
+### 8.1.1 模型能力探测（实测依据）
+
+**问题**：硬编码 `contextWindow: 128_000` / `maxTokens: 8_192` 与真实模型能力脱节，两个方向都会出问题 ——
+
+| 方向 | 后果 |
+|---|---|
+| 真实窗口**更大**（实测 `deepseek-flash` 为 1_048_576）| 守卫与 pi-ai 的本地钳制都用这个值 → 白白浪费 8 倍容量，长任务被过早裁剪，且**不报错**（静默损失）|
+| 真实窗口**更小**（如用户配了 32K 的模型）| 守卫 `charBudget/2 >= contextWindow` 会放行约 100k token 的请求 → **provider 400** |
+
+**实测数据**（`GET https://api.deepseek.com/models`，2026-10-09）：
+
+```json
+{ "id": "deepseek-flash", "name": "DeepSeek-V4.1-Flash",
+  "context_window": 1048576, "max_output_tokens": 393216,
+  "input_modalities": ["text", "image"] }
+```
+
+**修法**：新增 `src/lib/server/agent/model-capabilities.ts`（无 Pi 依赖），`buildPiModel(cfg, capabilities?)` 接受可选第二参。
+
+**两个字段的语义必须区分开**（pi-ai 源码实测：`contextWindow` 只用于本地 `clampMaxTokensToContext`、**不上行**；`maxTokens` 会作为 `max_tokens` **发出**）：
+
+| 字段 | 性质 | 取值规则 |
+|---|---|---|
+| `contextWindow` | **事实**（模型真实窗口）| 用探测值；探测失败回退 128_000。唯一要求是**别高估** |
+| `maxTokens` | **我方策略**（想要多少输出）| `min(8_192, 模型 max_output_tokens)` —— 只**向下钳制**，绝不跟随模型上限（跟随 393_216 等于放开成本阀门）|
+
+**探测失败的处理**：任何失败（网络 / 非 200 / 结构不符 / 字段缺失）返回 `null`，回退保守默认值，**且不抛异常** —— 探测不该拖垮一次 Run。worker 侧对回退打 `console.warn`（这正是「模型窗口更小会被 400」的那个危险场景，必须可见）。
+
+**缓存**：成功结果按 `baseUrl::modelName` 缓存 5 分钟，避免 `/models` 进入每次 Run 的关键路径；**失败不缓存**，provider 恢复后立刻生效。注意 `/models` 返回 `context_window` 是 DeepSeek 对标准 OpenAI 接口的**扩展**，多数 provider 没有 —— 因此回退路径必须健壮，这是本设计的常态分支而非异常分支。
+
 ### 8.2 getApiKey：接现有解密逻辑
 
 ```ts
@@ -1164,6 +1196,16 @@ pi-ai 的 `detectCompat` 匹配规则（读 `node_modules/@earendil-works/pi-ai/
 | 问题 | 现象 | 根因 | 修法 |
 |---|---|---|---|
 | **工具名非法（D18）** | Run 记为 `failed`，`errorType=model_error`，事件里只有 `400: Invalid 'tools[0].function.name'` | skillKey 用点号命名空间（`topic.generate`），而 OpenAI 兼容接口的 `tools[].function.name` 只接受 `^[a-zA-Z0-9_-]+$`。失败在**请求阶段**，表现为「模型请求失败」，从日志很难看出真因是工具名 | 6 个 skillKey 改为下划线形式（`topic_generate` / `hot_refresh` / `content_note_pack` / `review_submit` / `script_generate` / `schedule_recommend`），并新增 `assertToolNamesProviderSafe()` 启动断言（见 D18、§6.6） |
+| **模型上限硬编码** | 未在本机触发（当前模型窗口足够大），但换用小窗口模型即会 400 | `contextWindow` / `maxTokens` 硬编码，与真实能力脱节 | 改为从 `/models` 探测，见 §8.1.1 |
+
+**工具名约束的实测边界**（对上表的补充验证）：直接对 provider 做 A/B，确认约束是**整个字符集**而非仅点号 ——
+
+| 工具名 | 结果 |
+|---|---|
+| `topic_generate` | 200 接受 |
+| `topic.generate` / `topic generate` / `topic/generate` / `topic:generate` / `选题生成` | 全部 400 |
+
+即 `assertToolNamesProviderSafe()` 的正则 `^[a-zA-Z0-9_-]+$` 与 provider 行为逐字符一致（**冒号也被拒**，这一点从最初的错误信息里看不出来）。
 
 **这次验收验证到位的两条关键设计**
 
@@ -1176,6 +1218,8 @@ pi-ai 的 `detectCompat` 匹配规则（读 `node_modules/@earendil-works/pi-ai/
 - `agent_tool_calls` 只覆盖「正常执行」与「护栏阻断」两类；参数校验失败与 `length` 截断导致的失败调用不进该表（Pi 在这两种情况下不走任何钩子，只发 `tool_execution_end` 事件），需 P1 由事件回填。
 - 自定义技能（`skill_registry`）当前**不可作为工具调用**：`checkToolAllowed` 是 fail-closed 的，不在 `SKILL_CATALOG` 里的名称一律阻断。P1 放开自定义技能时需同时把其 skillKey 纳入 D18 的名称断言。
 - **`maxSteps` / `tokenBudget` 只落库不拦截**（§7.4）：P0 的硬拦只有两道 —— 10 分钟墙钟超时与连续 3 次工具失败。模型若陷入长循环，会在墙钟超时处被中止，期间可能超出预期成本。**该取舍已于 P0 验收后经确认接受**，步数/预算硬拦截随 §7.4 的 `finishTurn` 钩子一并留到 P1。
+- **`buildPiModel` 的 `input: ["text"]` 是硬编码**，而实测 `deepseek-flash` 的 `input_modalities` 含 `image`。P1 做图片类工具（图片生成/理解）时这一行必须改，否则 pi-ai 会按纯文本模型裁剪多模态消息。
+- **自研文本客户端（`ai-service.ts`）同样没有上下文窗口守卫** —— §8.1.1 的探测目前只接进 Agent 循环。若同一模型也被自研客户端用于长输入场景，需一并接入。
 
 ---
 

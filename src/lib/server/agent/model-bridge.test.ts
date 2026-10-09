@@ -67,3 +67,36 @@ describe("buildPiModel（ModelConfig → pi-ai Model）", () => {
     expect(model.provider).toBe("openai-compatible");
   });
 });
+
+describe("buildPiModel + 真实模型能力（capabilities）", () => {
+  it("未传 capabilities 时用保守默认值（行为与之前完全一致）", () => {
+    const model = buildPiModel(cfg);
+    expect(model.contextWindow).toBe(128_000);
+    expect(model.maxTokens).toBe(8_192);
+  });
+
+  it("传入 capabilities 时 contextWindow 用 provider 报告的真实值", () => {
+    // 实测 deepseek-flash 的真实窗口是 1048576；原先硬编码 128000 会白白浪费 8 倍容量
+    const model = buildPiModel(cfg, { contextWindow: 1_048_576, maxOutputTokens: 393_216 });
+    expect(model.contextWindow).toBe(1_048_576);
+  });
+
+  it("模型输出上限更大时，仍保持项目的策略上限（不放大到模型上限）", () => {
+    // maxTokens 会作为 max_tokens 发给 provider，是「我们想要多少输出」的策略值。
+    // 直接跟到模型上限（393216）等于放开成本阀门，必须保持保守。
+    const model = buildPiModel(cfg, { contextWindow: 1_048_576, maxOutputTokens: 393_216 });
+    expect(model.maxTokens).toBe(8_192);
+  });
+
+  it("模型输出上限更小时被钳到模型上限（否则会触发 provider 400）", () => {
+    const model = buildPiModel(cfg, { contextWindow: 32_768, maxOutputTokens: 4_096 });
+    expect(model.maxTokens).toBe(4_096);
+    expect(model.contextWindow).toBe(32_768);
+  });
+
+  it("传入 null（探测失败）时回退默认值", () => {
+    const model = buildPiModel(cfg, null);
+    expect(model.contextWindow).toBe(128_000);
+    expect(model.maxTokens).toBe(8_192);
+  });
+});
