@@ -566,9 +566,32 @@ Agent 分析端用 `library.searchNotes` 查**已入库**内容即可。
 
 ### 6.4 schema 重建为 TypeBox
 
-`AgentTool.parameters: TSchema` 需 TypeBox 类型。现有 `paramsSchema` 是**裸 JSON Schema 对象**，缺 TypeBox 的 `[Kind]` 符号，直接 `as TSchema` 强转**可能导致校验失败或静默失效**。
+**为什么重建而不是直接强转**（本节早期版本的论证是错的，已按实测订正）：
 
-因此：**用 TypeBox 的 `Type.Object()` 重建这 15 个工具 schema**。
+早期版本称「裸 JSON Schema 缺 TypeBox 的 `[Kind]` 符号，强转会失效」。**该说法对 typebox 1.x 不成立** —— 实测：
+
+```
+Object.getOwnPropertySymbols(Type.Integer({ minimum: 1 }))  →  []   （无任何符号）
+node_modules/typebox/build/type/*/schema.d.mts → export interface TSchema {}
+```
+
+`TSchema` 在 typebox **1.x** 中是**空标记接口**，`Type.Object()` 产出的就是普通 JSON Schema 对象。`[Kind]` 符号是 typebox **0.x**（`@sinclair/typebox`）的设计。所以强转在类型与运行时都不会报错 —— **但仍然不该这样做**。
+
+**真正的理由**（实测，更有说服力）：现有 `paramsSchema` 是**无 `required`、无边界约束**的松散 schema，会静默放行非法参数：
+
+| 场景 | 旧 `paramsSchema` 的 `Value.Check` | 新 TypeBox schema |
+|---|---|---|
+| `content.notePack` 缺必填 `topic` | `true` ← **静默放行** | `false` ← 正确拒绝 |
+| `review.submit` 传 `draft_id: -1` | `true` ← **静默放行** | `false` ← 正确拒绝 |
+| `topic.generate` 传 `count: 999` | `true` | `false` |
+
+`paramsSchema` 的定位是**给技能库页面看的展示元数据**，TypeBox schema 才是**执行时的强制边界**。两者刻意分工，前者保持宽松、后者收紧。
+
+因此：**用 TypeBox 的 `Type.Object()` 重建这 15 个工具 schema**（P0 先做 6 个）。
+
+**顺带确认的一条依赖事实**：`pi-agent-core` 声明的依赖是 `"typebox": "1.3.27"` —— 与本项目根依赖**同包同版本**。已实测 `AgentTool["parameters"] = getToolSchema(skillKey)` 双向类型兼容，因此 Task 7 无需任何 `as never` 断言。
+
+**已知未收紧项**：6 个 schema 均未设 `additionalProperties: false`，故 `hot.refresh` 接受 `{}` 也接受 `{foo: 1}`。P0 只约束"必填参数"，严格拒绝未知键留待后续按需收紧。
 
 ```ts
 // src/lib/server/agent/tool-registry.ts
