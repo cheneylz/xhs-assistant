@@ -1010,7 +1010,23 @@ Task 0 已实测三项风险，**结论与本节原假设有出入，以实测�
 | R2 TypeBox 校验 | ✅ **通过** | `{ good: true, bad: false, badType: false }`（合法通过 / 超范围拒绝 / 类型错拒绝）|
 | R3 自定义 baseUrl | ✅ **通过（真实验证，2026-10-09 补完）** | 真实 provider 端到端成功；但需 `Model.headers` 补自定义请求头，见下 |
 
-#### R3 真实验证详情（2026-10-09 补完）
+#### R3 最终结论（2026-10-09 闭合）
+
+改用标准 OpenAI 兼容端点后，**两条路径同时验证通过**：
+
+| 路径 | 结果 |
+|---|---|
+| 自研客户端 `OpenAICompatibleTextClient`（项目现有全部 AI 功能）| ✅ 返回 `"成功"` |
+| pi-ai `streamSimple`（Agent 路径）| ✅ `stopReason=stop`，`usage` 真实返回 |
+
+配置：`modelName=deepseek-flash`，`baseUrl=https://api.deepseek.com`。
+
+**这也反向确认了「换标准端点」是对的选择** —— 标准端点不需要自定义请求头，绕开了下文中
+记录的能力缺口（OpenCode Zen 网关要求 `x-opencode-session`，而当前架构无处安放自定义头）。
+
+保留下面的探测记录，因为若将来再接入需要自定义头的网关，这些结论可直接复用。
+
+#### R3 探测过程记录（2026-10-09）
 
 用项目里真实配置的 `ModelConfig` 跑通 `streamSimple`，`stopReason=stop`，`usage` 返回
 `{input:35, output:49, reasoning:47, totalTokens:84}`（**证明 token 计量路径有真实数据**）。
