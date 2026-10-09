@@ -51,13 +51,20 @@ export interface FailureTracker {
   readonly count: number;
 }
 
-/** 连续失败计数器：成功一次即归零 */
+/**
+ * 连续失败计数器：成功一次即归零。
+ *
+ * 阈值下限为 1（在此钳制，而非依赖调用方）：阈值为 0 时 `count >= 0` 恒真，
+ * 会把**成功**的调用也判为超限，导致第一次工具调用就中止循环。
+ * 在函数内钳制可让这条保证不依赖每个调用方都记得钳制。
+ */
 export function createFailureTracker(maxFailures: number): FailureTracker {
   let count = 0;
+  const threshold = Math.max(1, maxFailures);
   return {
     record(succeeded: boolean): FailureRecord {
       count = succeeded ? 0 : count + 1;
-      return { count, exceeded: count >= maxFailures };
+      return { count, exceeded: count >= threshold };
     },
     get count(): number {
       return count;

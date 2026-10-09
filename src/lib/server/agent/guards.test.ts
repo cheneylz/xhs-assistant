@@ -70,4 +70,12 @@ describe("createFailureTracker（连续失败计数）", () => {
     expect(tracker.record(true).exceeded).toBe(false);
     expect(tracker.count).toBe(0);
   });
+
+  it("阈值 0 被钳制为 1，不会把成功也判为超限", () => {
+    const tracker = createFailureTracker(0);
+    // 0 阈值若不钳制，record(true) 会因 0 >= 0 返回 exceeded: true，
+    // 导致第一次成功调用就中止循环
+    expect(tracker.record(true).exceeded).toBe(false);
+    expect(tracker.record(false).exceeded).toBe(true);
+  });
 });

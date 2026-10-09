@@ -118,7 +118,8 @@ export async function appendMessage(options: {
 
 /**
  * 用户发消息 → 建 Run。
- * 同时复用 Task 表（taskType="agent_run"），让任务中心能展示 Agent 任务。
+ * 同时复用 Task 表（taskType="agent_run"），让任务中心能展示 Agent 任务，
+ * 并把会话置为 running，让前端能区分「空闲」与「执行中」（禁用输入框、显示加载态）。
  */
 export async function createRunForMessage(options: {
   conversationId: number;
@@ -139,7 +140,7 @@ export async function createRunForMessage(options: {
       createdAt: shanghaiNow(),
     },
   });
-  return prisma.agentRun.create({
+  const run = await prisma.agentRun.create({
     data: {
       conversationId: options.conversationId,
       userId: options.userId,
@@ -154,6 +155,13 @@ export async function createRunForMessage(options: {
       createdAt: shanghaiNow(),
     },
   });
+
+  // 会话置为 running：前端据此区分「空闲」与「执行中」。
+  // 必须走 updateConversationStatus —— 它负责刷新 updatedAt（该字段既无库级默认值也无 @updatedAt）。
+  // 放在 Run 创建成功之后：若建 Run 失败，不应把会话留在 running。
+  await updateConversationStatus({ conversationId: options.conversationId, status: "running" });
+
+  return run;
 }
 
 /**
@@ -226,15 +234,38 @@ export async function finishRun(options: {
  */
 export async function sweepStuckRuns(thresholdMinutes: number): Promise<number> {
   const cutoff = new Date(shanghaiNow().getTime() - thresholdMinutes * 60 * 1000);
-  const result = await prisma.agentRun.updateMany({
+
+  // 先选出要清扫的行，取到 taskId 后再与 Task 一起更新。
+  // 只 updateMany 改 Run 会漏掉绑定的 Task：任务中心里那条 Agent 任务将永远停在
+  // pending（finishRun 是刻意保持 Run 与 Task 同步的，清扫也必须遵守同一约定）。
+  const stuckRuns = await prisma.agentRun.findMany({
     where: { status: "running", startedAt: { lt: cutoff } },
-    data: {
-      status: "failed",
-      errorType: "worker_restart",
-      finishedAt: shanghaiNow(),
-    },
+    select: { id: true, taskId: true },
   });
-  return result.count;
+  if (stuckRuns.length === 0) return 0;
+
+  // finishedAt 无库级默认值，必须显式传 shanghaiNow()（全库一致约定）
+  const now = shanghaiNow();
+  await prisma.$transaction([
+    prisma.agentRun.updateMany({
+      where: { id: { in: stuckRuns.map((run) => run.id) } },
+      data: {
+        status: "failed",
+        errorType: "worker_restart",
+        finishedAt: now,
+      },
+    }),
+    prisma.task.updateMany({
+      where: { id: { in: stuckRuns.map((run) => run.taskId) } },
+      data: {
+        status: "failed",
+        progress: 0,
+        finishedAt: now,
+      },
+    }),
+  ]);
+
+  return stuckRuns.length;
 }
 
 /** 取会话消息（供循环组装上下文） */

@@ -12,7 +12,6 @@
  */
 import type { Prisma, Task } from "@prisma/client";
 import { prisma } from "../core/db";
-import { decryptText } from "../core/security";
 import { formatDateTime, shanghaiNow } from "../core/time";
 import { OpenAICompatibleTextClient } from "./ai-service";
 import { getTextModelForUser } from "./scheduler-service";
