@@ -10,6 +10,8 @@
 
 **设计依据:** `docs/superpowers/specs/2026-10-09-agent-workspace-design.md`
 
+**修订记录:** 2026-10-09 依据独立评审修订 Task 10 / 11 / 12。两处致命缺陷：C1 `agent_tool_calls` 永远没有写入方（落库逻辑被安排在只能观察的 `subscribe` 里）；C2 中止与报错的 Run 会被记成 `succeeded`（用 try/catch 当成功判据，而 Pi 把失败编码在 `stopReason` 里）。另有 C4/C5/C6：上下文裁剪会裁掉最新用户指令、`usage` 被丢弃导致 token 计量不可能、每个 Run 都拿不到会话历史。
+
 ---
 
 ## Task 0 实测后的架构调整（必读，影响 5 个文件命名）
@@ -92,6 +94,21 @@ Task 7 暴露了一个严重隐患：计划里的 `tool-registry.test.ts` 断言
 
 ---
 
+## 钩子选择铁律：需要改写工具结果就必须用 `afterToolCall`
+
+> Pi 的 `subscribe` 只能**观察**事件，不能改写工具结果；需要改写 `content`/`details` 的逻辑（结果摘要、工件抽取、工具调用落库）**必须放在 `afterToolCall` 钩子里**。把这类工作写进 `subscribe` 会编译通过、测试也可能过，但逻辑永远不会生效 —— 因为钩子收了返回值而 `subscribe` 没有。
+
+这条教训解释了同一时期出现的三个「死导出」：`persistToolCall` 与 `finalizeToolCall` 在计划里各自只有定义、没有任何调用方，`summarizeToolResult` 也一直没被接进去 —— 它们原本都被安排在那个「只观察、不改写」的 `subscribe` 回调里。
+
+配套的四条实测事实（读 Pi 编译产物 `agent-loop.js` 确认，Task 10 的实现以此为准）：
+
+1. `afterToolCall` 收到 `{ assistantMessage, toolCall, args, result, isError, context }`，返回的 `content` / `details` / `isError` 会替换原值（无深合并）；`content` 会原样进入模型的 toolResult —— 这是唯一能改写给模型看的内容的位置。
+2. **被 `beforeToolCall` 阻断的调用不会走 `afterToolCall`**（Pi 直接构造错误结果返回）。所以「阻断」这件事只能在 `beforeToolCall` 里记录。
+3. 参数校验失败、以及 `stopReason: "length"` 触发的整批工具调用失败，**两个钩子都不走**，只体现在 `tool_execution_end` 事件里。
+4. `StreamFn` 契约要求**不得为请求/模型/运行时失败抛错**：失败一律编码为最终 `AssistantMessage` 的 `stopReason: "error" | "aborted"`；`agent.abort()` 也只中止 `AbortController`，`waitForIdle()` 永远 resolve。**任何用 try/catch 判定成功的写法，都会把失败记成 `succeeded`。**
+
+---
+
 ## 文件结构
 
 | 文件 | 职责 | 含 Pi 依赖 | 后缀 |
@@ -107,8 +124,8 @@ Task 7 暴露了一个严重隐患：计划里的 `tool-registry.test.ts` 断言
 | `src/lib/server/agent/types.mts` | `CustomAgentMessages` 声明合并 | ✅ | **`.mts`** |
 | `src/lib/server/agent/agent-loop.mts` | `Agent` 装配 + 单次 Run 驱动 | ✅ | **`.mts`** |
 | `src/prompts/agent.md` | Agent system prompt 模板 | — | — |
-| `src/worker/index.mts` | 新增 `agent_run_runner` + 崩溃清扫 | — | **`.mts`** |
-| `src/scripts/agent-smoke.mts` | P0 端到端验收脚本 | — | **`.mts`** |
+| `src/worker/index.mts` | 新增 `agent_run_runner` + 崩溃清扫（**由 `index.ts` 改名**）| ✅（间接，import agent-loop）| **`.mts`** |
+| `src/scripts/agent-smoke.ts` | P0 端到端验收脚本（不 import Pi，走 tsx 的 CJS 路径）| ❌ | `.ts` |
 
 **边界铁律**：只有 `model-bridge.mts` / `tool-registry.mts` / `types.mts` / `agent-loop.mts` 四个文件可以 `import "@earendil-works/pi-*"`，且都必须是 `.mts`（见上方 D17）。其余文件保持无 Pi 依赖的 `.ts`，以便被 Next.js 侧安全 import。
 
@@ -2500,11 +2517,42 @@ git commit -m "feat(agent): 新增会话/Run 管理服务与原子任务领取"
 
 ---
 
-## Task 10: agent.md 提示词与 agent-loop.ts 循环装配
+## Task 10: agent.md 提示词、context.ts 补强与 agent-loop.mts 循环装配
+
+**这是 P0 的核心任务，也是独立评审发现两处致命缺陷（工具调用无写入方 / 失败被记成成功）的所在。动手前先读下面的「钩子选择铁律」。**
+
+### 钩子选择铁律（本任务的实现依据）
+
+| 钩子 | 能力 | 本循环放什么 |
+|---|---|---|
+| `agent.subscribe(fn)` | **只能观察**事件，拿不到返回值 | 事件落库、连续失败计数、token 累计、中止判定 |
+| `beforeToolCall(ctx)` | 可以**阻断**：返回 `{ block: true, reason }` | `checkToolAllowed` 准入 + 阻断记录落库 |
+| `afterToolCall(ctx)` | 可以**改写**工具结果：返回的 `content`/`details` 会替换原值 | 结果摘要、工件抽取、工具调用落库 |
+
+`subscribe` 收不到钩子返回值，所以**结果摘要 / 工件抽取 / 工具调用落库必须写在 `afterToolCall` 里**。
+写进 `subscribe` 会编译通过、测试也可能过，但逻辑永远不会生效。
+
+三条实测事实（读 Pi 编译产物 `agent-loop.js` 确认）：
+
+1. **被阻断的调用不会走 `afterToolCall`** —— Pi 直接构造错误结果返回。所以 `blocked` 记录只能落在 `beforeToolCall`。
+2. **参数校验失败、以及 `stopReason: "length"` 导致整批工具调用失败时，两个钩子都不走** —— 这些调用只体现在 `subscribe` 的 `tool_execution_end` 事件里。
+3. **`StreamFn` 契约要求「不得为请求/模型/运行时失败抛错」** —— 失败一律编码为最终 `AssistantMessage` 的 `stopReason: "error" | "aborted"`；`agent.abort()` 也只是中止 `AbortController`，`waitForIdle()` 永远 resolve。**任何「有没有抛错」当成功判据的写法，都会把超时、连续工具失败、Key 无效、限流、provider 500 记成 `succeeded`**，并让绑定的 Task 变成 `completed` + `progress: 100`。
+
+**上述分工已用一次性运行时探针（假 streamFn + 假工具 + 假落库）实测通过**，实测结论：
+
+- `afterToolCall` 返回的 `content` **真的会替换模型看到的 toolResult 文本**（探针里模型收到的正是改写后的 `SUMMARY:…`）—— 这就是 C1 的修法成立的原因。
+- 被阻断的调用**只走** `beforeToolCall`，`afterToolCall` 不被调用；阻断的 `reason` 作为工具错误文本给到模型。
+- `stopReason: "error"` 与中止后，`agent.prompt()` / `waitForIdle()` 都**正常 resolve、不抛错** —— 只能靠 `stopReason` + 自记的中止原因判态。
+- `initialState.messages` 会被 seed：`transformContext` 收到的是 `[system, …历史, 本次新 user]`，系统提示自动排在历史之前，新用户消息不会重复。
+- 假 streamFn 的最小形状（`yield { type: "done" }` + `result()` 返回最终消息）足以驱动循环；只在收到中止信号后才结束的假流，可稳定复现超时路径。
 
 **Files:**
 - Create: `src/prompts/agent.md`
-- Create: `src/lib/server/agent/agent-loop.ts`
+- Create: `src/lib/server/agent/agent-loop.mts`（**是 `.mts`**：它 import Pi，tsx 下必须按 ESM 加载，见 D17）
+- Modify: `src/lib/server/agent/context.ts`（三处补强：toolCall 参数计入字符估算 / 保底保留最新 user 消息 / 摘要覆盖所有数组键）
+- Modify: `src/lib/server/agent/context.test.ts`
+- Modify: `src/lib/server/agent/persist.ts`（`finalizeToolCall` 的 null 语义注释）
+- Modify: `src/lib/server/agent/tool-registry.mts`、`tool-registry.test.ts`（删除 `findAgentTool`）
 - Test: `src/lib/server/agent/agent-loop.test.ts`
 
 - [ ] **Step 1: 创建 agent.md 提示词**
@@ -2534,7 +2582,235 @@ git commit -m "feat(agent): 新增会话/Run 管理服务与原子任务领取"
 <!-- /prompt:system -->
 ```
 
-- [ ] **Step 2: 写失败测试**
+- [ ] **Step 2: context.ts 三处补强**
+
+三处都是循环正确性的前置条件，改完一起跑测试。
+
+**(1) `estimateChars` 计入 toolCall 块的 arguments**
+
+现状只累加 `block.text`，而 `toolCall` 块根本没有 `text` 字段 —— 多轮工具调用的上下文被系统性低估。把函数替换为：
+
+```ts
+/** 估算单条消息的字符数 */
+export function estimateChars(message: unknown): number {
+  const target = message as MinimalMessage;
+  const content = target?.content;
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const block of content) {
+      const item = block as { text?: string; type?: string; arguments?: unknown };
+      if (typeof item?.text === "string") total += item.text.length;
+      // toolCall 块没有 text 字段，但它的 arguments 同样会进入请求体。
+      // 只累加 text 会让「模型一直在调工具」的场景被系统性低估。
+      if (item?.type === "toolCall" && item.arguments !== undefined) {
+        total += JSON.stringify(item.arguments).length;
+      }
+    }
+    return total;
+  }
+  return 0;
+}
+```
+
+**(2) `pruneByCharBudget` 保底保留最新一条 user 消息（C4）**
+
+预算小于 system prompt 时，现有实现返回 `[system]` —— **最新用户指令被裁掉**。模型只拿到 system、拿不到任何指令，会产出一个「像样的」非答案，而 Run 记为 `succeeded`。这是静默失忆，比报错难查得多。替换 `pruneByCharBudget` 并在其下方新增辅助函数：
+
+```ts
+/** 反向查找最后一条 user 消息的下标，不存在返回 -1 */
+function findLastUserIndex(messages: unknown[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if ((messages[i] as MinimalMessage)?.role === "user") return i;
+  }
+  return -1;
+}
+
+/**
+ * 按字符预算从尾部保留消息。
+ *
+ * 算法：从最新往前累加字符数，超预算即停止；
+ * 然后两处修正：
+ *   修正 1：切点不能是 toolResult（其 assistant 父消息已被裁掉，模型会困惑）
+ *   修正 2（保底）：最新一条 user 消息必须保留 —— 预算小于 system 时上面的循环会把
+ *          整段对话裁光，模型只拿到 system、拿不到指令，却会产出「像样的」非答案，
+ *          Run 还记为 succeeded。保底可让它至少回答对问题，而不是静默失忆。
+ */
+export function pruneByCharBudget<T>(messages: T[], charBudget: number): T[] {
+  if (messages.length === 0) return messages;
+
+  const systemMessages: T[] = [];
+  const conversational: T[] = [];
+  for (const message of messages) {
+    if ((message as MinimalMessage)?.role === "system") systemMessages.push(message);
+    else conversational.push(message);
+  }
+
+  const systemChars = systemMessages.reduce((sum, m) => sum + estimateChars(m), 0);
+  const budget = charBudget - systemChars;
+
+  let cutIndex = conversational.length;
+  let used = 0;
+  for (let i = conversational.length - 1; i >= 0; i -= 1) {
+    const size = estimateChars(conversational[i]);
+    if (used + size > budget) break;
+    used += size;
+    cutIndex = i;
+  }
+
+  // 修正 1：不能以 toolResult 开头
+  while (cutIndex < conversational.length && isToolResult(conversational[cutIndex])) {
+    cutIndex += 1;
+  }
+
+  // 修正 2：保底保留最新 user 消息（cutIndex 回退到它，此时切点必是 user 消息，不会再产生孤立 toolResult）
+  const lastUserIndex = findLastUserIndex(conversational);
+  if (lastUserIndex >= 0 && cutIndex > lastUserIndex) {
+    cutIndex = lastUserIndex;
+  }
+
+  return [...systemMessages, ...conversational.slice(cutIndex)];
+}
+```
+
+**(3) `summarizeToolResult` 覆盖所有数组键（C1 附带的错位陷阱）**
+
+**决策：保留并接入该函数（不删除）**，理由：`tool-registry.mts` 的 `toModelText` 只是把 JSON 从 20000 字符处硬切，模型会收到半截 JSON（无法判断列表还有多少条）；而本函数给出「截断后的前 N 条 + 每个列表的原始条数」，对模型友好得多。
+
+但必须同时修掉它的错位缺陷：它只截**第一个**数组键。`topic.generate` 同时返回 `suggestion_ids` 与 `titles` 两个数组，`count: 20` 时会得到「10 个 id 配 20 个标题」的错位结果，模型据此会把标题张冠李戴。替换为：
+
+```ts
+/**
+ * 工具结果摘要：把**每一个**数组值截断到 limit 条，并给出各自的原始条数。
+ *
+ * 为什么必须遍历所有数组键：topic.generate 同时返回 suggestion_ids 与 titles，
+ * 只截第一个会出现「10 个 id 配 20 个标题」的错位，模型会把标题张冠李戴。
+ * 非数组键原样保留。
+ *
+ * 注意：本函数的返回值只用于模型可见的 content，**不要**用它替换 details ——
+ * persist.ts 的 extractArtifacts 依赖完整的 details（Task 7 有测试锁定）。
+ * 另：`totals`/`truncated` 两个键与工具自身产出同名时会被覆盖（当前 6 个技能无此字段）。
+ */
+export function summarizeToolResult(
+  result: Record<string, unknown>,
+  limit = DEFAULT_LIST_LIMIT,
+): Record<string, unknown> {
+  const listKeys = Object.keys(result).filter((key) => Array.isArray(result[key]));
+  if (listKeys.length === 0) return result;
+
+  const summary: Record<string, unknown> = { ...result };
+  const totals: Record<string, number> = {};
+  let truncated = false;
+  for (const key of listKeys) {
+    const list = result[key] as unknown[];
+    totals[key] = list.length;
+    if (list.length > limit) {
+      summary[key] = list.slice(0, limit);
+      truncated = true;
+    }
+  }
+  summary.totals = totals;
+  summary.truncated = truncated;
+  return summary;
+}
+```
+
+**同步修改 `context.test.ts`**：原有两处 `summary.total` 改为 `summary.totals.items`，并新增三个用例：
+
+```ts
+  it("toolCall 块的 arguments 也计入字符数", () => {
+    const withArgs = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c1", name: "x", arguments: { topic: "A".repeat(100) } }],
+      timestamp: 0,
+    } as never;
+    expect(estimateChars(withArgs)).toBeGreaterThan(100);
+  });
+
+  it("预算小于 system 时仍保留最新 user 消息（否则模型拿不到任何指令）", () => {
+    const messages = [systemMsg("S".repeat(5000)), userMsg("这是一定要保留的指令")];
+    const result = pruneByCharBudget(messages, 10);
+    expect(JSON.stringify(result)).toContain("这是一定要保留的指令");
+  });
+
+  it("多个数组键同时截断，且各自给出原始条数（topic.generate 场景）", () => {
+    const summary = summarizeToolResult({
+      suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
+      titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),
+      count: 20,
+    }) as { suggestion_ids: unknown[]; titles: unknown[]; totals: Record<string, number>; truncated: boolean };
+    // 两个数组必须同步截断，否则 id 与标题会错位
+    expect(summary.suggestion_ids).toHaveLength(10);
+    expect(summary.titles).toHaveLength(10);
+    expect(summary.totals).toEqual({ suggestion_ids: 20, titles: 20 });
+    expect(summary.truncated).toBe(true);
+    expect(summary.count).toBe(20);
+  });
+```
+
+- [ ] **Step 3: 删除 `findAgentTool`（决策：删除而非保留）**
+
+**决策：删除**。理由：唯一消费者是它自己的测试（自证式断言），而它用 `textClient: null as never` + `userId: 0` 构造**可调用**工具 —— 一旦被真实执行，`hot.refresh` 会跳过 `modelConfig` 守卫一路走到 `collectHotTopicsForUser`，即「单元测试铁律」要防的真实小红书接口调用。删掉即可消除这个引线；测试改查 `buildAgentTools` 的返回数组（已有用例覆盖）。
+
+编辑 `src/lib/server/agent/tool-registry.mts`：删除文件末尾的 `findAgentTool` 函数。
+编辑 `src/lib/server/agent/tool-registry.test.ts`：删除 import 中的 `findAgentTool`，并删除 `describe("findAgentTool（单技能查询）", ...)` 整个块。
+
+- [ ] **Step 4: 改 persist.ts 两处（保留 usage / 补 null 语义注释）**
+
+**(1) `serializeEventForDb` 保留 `usage`（B5：不保留则 token 基线无法从库里复算）**
+
+现状把 `message_start` / `message_update` / `message_end` 一律压成 `{ role, trimmed: true }`，**`usage` 被丢掉**。循环内的 `tokensUsed` 只活在内存里，库里没有 per-turn 的 token 数据 —— P1 的预算拦截与成本核算将没有基线。`usage` 只有几十字节，保留它不影响「剔除大消息体」的初衷。替换该分支为：
+
+```ts
+  if (TRIMMED_EVENT_TYPES.has(type)) {
+    const message = event.message as { role?: string; usage?: unknown } | undefined;
+    const payload: Record<string, unknown> = { role: message?.role ?? "assistant", trimmed: true };
+    // message_end 的 usage 是 P0 唯一的 token 基线（agent_runs.tokens_used 之外的明细来源），
+    // 体积很小，必须保留；整条 message 的其余部分仍然剔除。
+    if (type === "message_end" && message?.usage !== undefined) payload.usage = message.usage;
+    return { type, payload: payload as Prisma.InputJsonValue };
+  }
+```
+
+同步在 `persist.test.ts` 补一条用例（已实测通过，且不影响既有的「体积上限」用例）：
+
+```ts
+  it("message_end 保留 usage（token 基线的唯一来源），大字段仍剔除", () => {
+    const serialized = serializeEventForDb({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "A".repeat(5000) }],
+        usage: { input: 100, output: 20, totalTokens: 120 },
+      },
+    });
+    const payload = serialized.payload as Record<string, unknown>;
+    expect(payload.trimmed).toBe(true);
+    expect(payload.usage).toEqual({ input: 100, output: 20, totalTokens: 120 });
+    expect(JSON.stringify(payload).length).toBeLessThan(2000);
+  });
+```
+
+**(2) 给 `finalizeToolCall` 补 null 语义注释（决策：保留现状 + 注释）**
+
+**决策：保留现有行为，但把不对称之处写成注释**，避免后续调用方把 `null` 误读成「清空」。
+
+编辑 `src/lib/server/agent/persist.ts` 的 `finalizeToolCall`，在 `data` 前加注释：
+
+```ts
+    data: {
+      // 注意语义不对称（有意，不要「顺手统一」）：
+      //   result 传 null 表示「本次不动这一列」（?? undefined 会被 Prisma 忽略）
+      //   errorType / durationMs 传 null 表示「清空该列」（?? null 会真的写入 NULL）
+      // 调用方若要保留原有 result，传 null 即可，不必回读。
+      result: (options.result ?? undefined) as Prisma.InputJsonValue | undefined,
+      status: options.status,
+      errorType: options.errorType ?? null,
+      durationMs: options.durationMs ?? null,
+    },
+```
+
+- [ ] **Step 5: 写失败测试（agent-loop.test.ts）**
 
 创建 `src/lib/server/agent/agent-loop.test.ts`：
 
@@ -2542,11 +2818,182 @@ git commit -m "feat(agent): 新增会话/Run 管理服务与原子任务领取"
 /**
  * Agent 循环集成测试（离线）
  *
- * 关键：注入假 streamFn，完全不调真实 LLM，不烧 token。
- * 验证「思考 → 调工具 → 看结果 → 收尾」全流程与事件序列。
+ * 关键：注入假 streamFn 与假落库函数 —— 不调真实 LLM、不连数据库、不烧 token。
+ * 覆盖「思考 → 调工具 → 看结果 → 收尾」全流程，以及两条必须失败的路径与多轮历史。
  */
 import { describe, expect, it, vi } from "vitest";
-import { buildToolCatalogText, runAgentLoop } from "./agent-loop";
+import { Type } from "typebox";
+import {
+  buildToolCatalogText,
+  resolveLoopOutcome,
+  runAgentLoop,
+  type FinalizeToolCallFn,
+  type PersistToolCallFn,
+  type RunAgentLoopOptions,
+  type StoredMessage,
+} from "./agent-loop.mts";
+
+/** 空 usage，只为满足 AssistantMessage 形状 */
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** 造一条助手文本消息 */
+function assistantText(text: string, stopReason = "stop") {
+  return {
+    role: "assistant",
+    content: text ? [{ type: "text", text }] : [],
+    api: "openai-completions",
+    provider: "openai-compatible",
+    model: "fake-model",
+    usage: { ...EMPTY_USAGE, totalTokens: 10 },
+    stopReason,
+    timestamp: 0,
+  } as Record<string, unknown>;
+}
+
+/** 造一条「要调工具」的助手消息 */
+function assistantToolCall(toolCallId: string, toolName: string, args: Record<string, unknown>) {
+  return {
+    ...assistantText(""),
+    content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: args }],
+    stopReason: "toolUse",
+  };
+}
+
+/**
+ * 把一条最终助手消息包装成 pi 期望的 AssistantMessageEventStream。
+ * 只发 done：循环从 result() 取最终消息，中间增量事件只用于渲染。
+ */
+function createFakeStream(message: Record<string, unknown>) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield { type: "done" };
+    },
+    result: async () => message,
+  };
+}
+
+/** 按脚本依次返回助手消息的假 streamFn；脚本用完后返回空 stop 消息以结束循环 */
+function createScriptedStreamFn(script: Array<Record<string, unknown>>) {
+  let turn = 0;
+  return (() => {
+    const message = script[turn] ?? assistantText("");
+    turn += 1;
+    return createFakeStream(message);
+  }) as never;
+}
+
+/** 记录「模型实际看到了什么」的假 streamFn */
+function createCapturingStreamFn(seen: Array<Record<string, unknown>>, reply: string) {
+  let turn = 0;
+  return ((_model: unknown, context: { messages?: Array<Record<string, unknown>> }) => {
+    seen.push(...(context?.messages ?? []));
+    turn += 1;
+    return createFakeStream(assistantText(turn === 1 ? reply : ""));
+  }) as never;
+}
+
+/**
+ * 构造一个「不返回」的假 streamFn：只在收到中止信号后结束，并把 stopReason 置为 aborted
+ * —— 与真实 streamSimple 被中止时的行为一致。
+ */
+function createHangingStreamFn() {
+  return ((_model: unknown, _context: unknown, streamOptions?: { signal?: AbortSignal }) => {
+    const signal = streamOptions?.signal;
+    return {
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        // 一个事件都不发：循环会走「流结束但无事件」的兜底路径，取 result() 作为最终消息
+      },
+      result: async () => assistantText("", "aborted"),
+    };
+  }) as never;
+}
+
+/** 不碰数据库、不碰网络的假工具 */
+function createFakeTool(
+  name: string,
+  output: Record<string, unknown>,
+  parameters: ReturnType<typeof Type.Object> = Type.Object({}),
+) {
+  return {
+    name,
+    label: name,
+    description: "假工具（测试用）",
+    parameters,
+    replay: "never",
+    execute: async () => ({
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      details: output,
+    }),
+  } as never;
+}
+
+/** 假落库实现：把每次调用记进数组，便于断言 */
+function createFakePersisters() {
+  const events: Array<Record<string, unknown>> = [];
+  const messages: Array<{ role: string; content: string }> = [];
+  const started: Array<Parameters<PersistToolCallFn>[0]> = [];
+  const finalized: Array<Parameters<FinalizeToolCallFn>[0]> = [];
+  return {
+    events,
+    messages,
+    started,
+    finalized,
+    persistEvent: vi.fn(async (_runId: number, event: Record<string, unknown>): Promise<string> => {
+      events.push(event);
+      return String(events.length);
+    }),
+    persistMessage: vi.fn(async (message: { role: string; content: string }): Promise<void> => {
+      messages.push(message);
+    }),
+    persistToolCall: vi.fn(async (options: Parameters<PersistToolCallFn>[0]): Promise<number> => {
+      started.push(options);
+      return started.length;
+    }),
+    finalizeToolCall: vi.fn(async (options: Parameters<FinalizeToolCallFn>[0]): Promise<void> => {
+      finalized.push(options);
+    }),
+  };
+}
+
+/** 最小参数集 */
+function baseOptions(overrides: Partial<RunAgentLoopOptions> = {}) {
+  const fake = createFakePersisters();
+  const options: RunAgentLoopOptions = {
+    runId: 1,
+    conversationId: 1,
+    userId: 1,
+    userMessage: "你好",
+    // 只用到 api / provider / id / contextWindow 四个字段
+    model: {
+      id: "fake-model",
+      api: "openai-completions",
+      provider: "openai-compatible",
+      contextWindow: 128_000,
+    } as never,
+    tools: [],
+    systemPrompt: "系统提示",
+    persistEvent: fake.persistEvent,
+    persistMessage: fake.persistMessage,
+    persistToolCall: fake.persistToolCall,
+    finalizeToolCall: fake.finalizeToolCall,
+    ...overrides,
+  };
+  return { fake, options };
+}
 
 describe("buildToolCatalogText（工具目录文本）", () => {
   it("列出全部 6 个技能的 skillKey 与描述", () => {
@@ -2557,125 +3004,234 @@ describe("buildToolCatalogText（工具目录文本）", () => {
   });
 });
 
-describe("runAgentLoop（循环编排）", () => {
-  it("事件按顺序落库，agent_start 在最前、agent_end 在最后", async () => {
-    const events: string[] = [];
-    const persistEvent = vi.fn(async (_runId: number, event: Record<string, unknown>) => {
-      events.push(String(event.type));
-      return "1200";
-    });
-
-    await runAgentLoop({
-      runId: 1,
-      conversationId: 1,
-      userId: 1,
-      userMessage: "你好",
-      fakeStreamFn: createFakeStreamFn(["你好，我是运营助手。"]),
-      persistEvent,
-      model: {} as never,
-      tools: [],
-      systemPrompt: "系统提示",
-    });
-
-    expect(events[0]).toBe("agent_start");
-    expect(events[events.length - 1]).toBe("agent_end");
+describe("resolveLoopOutcome（终态映射）", () => {
+  it("stopReason 为 stop 时记为 succeeded", () => {
+    expect(resolveLoopOutcome({ stopReason: "stop" }).status).toBe("succeeded");
   });
 
-  it("模型不调用工具时直接收尾，产出助手消息", async () => {
-    const persisted: Array<Record<string, unknown>> = [];
-    const persistMessage = vi.fn(async (message: Record<string, unknown>) => {
-      persisted.push(message);
-    });
+  it("stopReason 为 error 时记为 failed（Key 无效 / 限流 / provider 5xx 都走这条）", () => {
+    const outcome = resolveLoopOutcome({ stopReason: "error", errorMessage: "invalid api key" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("model_error");
+  });
 
-    const result = await runAgentLoop({
-      runId: 1,
-      conversationId: 1,
-      userId: 1,
-      userMessage: "你好",
-      fakeStreamFn: createFakeStreamFn(["你好，我是运营助手。"]),
-      persistEvent: async () => "1",
-      persistMessage,
-      model: {} as never,
-      tools: [],
-      systemPrompt: "系统提示",
-    });
+  it("stopReason 为 length 时记为 failed", () => {
+    expect(resolveLoopOutcome({ stopReason: "length" }).status).toBe("failed");
+  });
+
+  it("无本地中止原因时 aborted 记为 cancelled（外部中止）", () => {
+    expect(resolveLoopOutcome({ stopReason: "aborted" }).status).toBe("cancelled");
+  });
+
+  it("本地中止原因优先：超时 → failed(timeout)", () => {
+    const outcome = resolveLoopOutcome({ abortReason: "timeout", stopReason: "aborted" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("timeout");
+  });
+
+  it("本地中止原因优先：连续工具失败 → failed(tool_failures)", () => {
+    const outcome = resolveLoopOutcome({ abortReason: "tool_failures", stopReason: "aborted" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("tool_failures");
+  });
+
+  it("stopReason 缺失或未知时 fail-closed 记为 failed（绝不能默认 succeeded）", () => {
+    expect(resolveLoopOutcome({}).status).toBe("failed");
+    expect(resolveLoopOutcome({ stopReason: "whatever" }).status).toBe("failed");
+  });
+});
+
+describe("runAgentLoop（循环编排）", () => {
+  it("事件按顺序落库，agent_start 在最前、agent_end 在最后", async () => {
+    const { fake, options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("你好，我是运营助手。")]) });
+    await runAgentLoop(options);
+
+    const types = fake.events.map((event) => String(event.type));
+    expect(types[0]).toBe("agent_start");
+    expect(types[types.length - 1]).toBe("agent_end");
+  });
+
+  it("模型不调用工具时直接收尾：产出助手消息、记为 succeeded，且 token 有计量", async () => {
+    const { fake, options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("你好，我是运营助手。")]) });
+    const result = await runAgentLoop(options);
 
     expect(result.status).toBe("succeeded");
-    expect(persisted.some((message) => message.role === "assistant")).toBe(true);
+    expect(result.stepCount).toBe(0);
+    // 假消息的 usage.totalTokens 为 10 —— 证明 usage 被累计（C5）
+    expect(result.tokensUsed).toBe(10);
+    expect(fake.messages.some((message) => message.role === "assistant")).toBe(true);
+  });
+
+  it("模型返回 stopReason=error 时记为 failed，而不是 succeeded", async () => {
+    const { options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("", "error")]) });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("model_error");
+  });
+
+  it("墙钟超时中止后记为 failed(timeout)", async () => {
+    const { options } = baseOptions({ fakeStreamFn: createHangingStreamFn(), runTimeoutMs: 30 });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("timeout");
+  });
+
+  it("工具调用落库为 running → succeeded，并按 stepIndex 记录", async () => {
+    const items = Array.from({ length: 3 }, (_, i) => i + 1);
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("topic.generate", { suggestion_ids: items, titles: ["A", "B", "C"] }, Type.Object({ count: Type.Optional(Type.Number()) }))],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "topic.generate", { count: 3 }),
+        assistantText("已完成"),
+      ]),
+    });
+    const result = await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ stepIndex: 0, toolName: "topic.generate", status: "running", params: { count: 3 } });
+    expect(fake.finalized).toHaveLength(1);
+    expect(fake.finalized[0]).toMatchObject({ id: 1, status: "succeeded" });
+    expect(result.stepCount).toBe(1);
+    // 3 个选题 → 3 条工件事件
+    expect(fake.events.filter((event) => event.type === "artifact")).toHaveLength(3);
+  });
+
+  it("结果摘要只改模型可见的 content，details 保持完整（多数组键同时截断）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [
+        createFakeTool("topic.generate", {
+          suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
+          titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),
+          count: 20,
+        }),
+      ],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "topic.generate", {}),
+        assistantText("已完成"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    // 模型看到的是 toolResult 消息的 content —— 必须是摘要（截断 + 原始条数）
+    const toolResultEvent = fake.events.find(
+      (event) => event.type === "message_end" && (event.message as { role?: string })?.role === "toolResult",
+    );
+    const text = ((toolResultEvent?.message as { content?: Array<{ text?: string }> })?.content ?? [])
+      .map((block) => block.text ?? "")
+      .join("");
+    const summary = JSON.parse(text) as {
+      truncated?: boolean;
+      totals?: Record<string, number>;
+      suggestion_ids?: unknown[];
+      titles?: unknown[];
+    };
+    expect(summary.truncated).toBe(true);
+    expect(summary.totals).toEqual({ suggestion_ids: 20, titles: 20 });
+    // 两个数组必须同步截断，否则 id 与标题错位
+    expect(summary.suggestion_ids).toHaveLength(10);
+    expect(summary.titles).toHaveLength(10);
+    // details 未被摘要污染：工件抽取因此拿到的是完整产出
+    expect(fake.finalized[0]?.result).toMatchObject({ count: 20 });
+    expect(((fake.finalized[0]?.result as { titles?: unknown[] })?.titles ?? [])).toHaveLength(20);
+  });
+
+  it("护栏阻断的调用落一条 blocked 记录，且不中断整体流程", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("not.exist", {})],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "not.exist", {}),
+        assistantText("该工具不可用，已放弃"),
+      ]),
+    });
+    const result = await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ toolName: "not.exist", status: "blocked", errorType: "guard_blocked" });
+    // 阻断走的是 immediate 分支，不会进 afterToolCall
+    expect(fake.finalized).toHaveLength(0);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("多轮：第二次运行能读到第一次的消息，孤立的 tool 历史被丢弃", async () => {
+    const history: StoredMessage[] = [
+      { role: "user", content: "第一轮的提问", toolCallId: null },
+      { role: "assistant", content: "第一轮的回答", toolCallId: null },
+      { role: "tool", content: "上一轮的工具产出", toolCallId: "call-9" },
+    ];
+    const seen: Array<Record<string, unknown>> = [];
+    const { options } = baseOptions({
+      userMessage: "接着上一轮继续",
+      historyMessages: history,
+      fakeStreamFn: createCapturingStreamFn(seen, "好的"),
+    });
+    await runAgentLoop(options);
+
+    const text = JSON.stringify(seen);
+    expect(text).toContain("第一轮的提问");
+    expect(text).toContain("第一轮的回答");
+    expect(text).toContain("接着上一轮继续");
+    // 没有配对 toolCall 的 toolResult 会被 provider 拒绝，P0 直接丢弃
+    expect(text).not.toContain("上一轮的工具产出");
+  });
+
+  it("charBudget/2 不小于上下文窗口时直接失败，不发请求", async () => {
+    let called = 0;
+    const { options } = baseOptions({
+      charBudget: 300_000, // 300000 / 2 = 150000 > 128000
+      fakeStreamFn: (() => {
+        called += 1;
+        return createFakeStream(assistantText("不该被调用"));
+      }) as never,
+    });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("char_budget_exceeds_context_window");
+    expect(called).toBe(0);
   });
 });
 ```
 
-同时在该测试文件顶部加入假 streamFn 的构造辅助（放在 `describe` 之前）：
-
-```ts
-/**
- * 构造一个假的 streamFn：按脚本依次返回助手回复，不发起任何网络请求。
- * 每轮取一个文本；用完则返回空回复以结束循环。
- */
-function createFakeStreamFn(scriptedTexts: string[]) {
-  let turn = 0;
-  return (() => {
-    const text = scriptedTexts[turn] ?? "";
-    turn += 1;
-    return createFakeStream(text);
-  }) as never;
-}
-
-/** 把一段文本包装成 pi 期望的 AssistantMessageEventStream */
-function createFakeStream(text: string) {
-  const message = {
-    role: "assistant",
-    content: text ? [{ type: "text", text }] : [],
-    stopReason: "stop",
-    timestamp: 0,
-  };
-  const events = [
-    { type: "start" },
-    { type: "text_start", contentIndex: 0 },
-    { type: "text_delta", contentIndex: 0, delta: text },
-    { type: "text_end", contentIndex: 0 },
-    { type: "done", message },
-  ];
-  return {
-    async *[Symbol.asyncIterator]() {
-      for (const event of events) yield event;
-    },
-    result: async () => message,
-  };
-}
-```
-
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 6: 运行测试确认失败**
 
 ```bash
+cd F:/project/code/xhs-assistant
 npx vitest run src/lib/server/agent/agent-loop.test.ts
 ```
 
-Expected: FAIL —— `Failed to resolve import "./agent-loop"`
+Expected: FAIL —— `Failed to resolve import "./agent-loop.mts"`
 
-- [ ] **Step 4: 实现 agent-loop.ts**
+- [ ] **Step 7: 实现 agent-loop.mts**
 
-创建 `src/lib/server/agent/agent-loop.ts`：
+创建 `src/lib/server/agent/agent-loop.mts`：
 
 ```ts
 /**
  * Agent 循环装配与驱动
  *
- * 用 Pi 的 Agent 跑 ReAct 循环，所有可观测动作经钩子落库。
+ * 用 Pi 的 Agent 跑 ReAct 循环。三处钩子分工（改动前先读）：
+ *   - subscribe      ：只能观察。事件落库、连续失败计数、token 累计、中止判定
+ *   - beforeToolCall ：准入。checkToolAllowed 判定 + 阻断记录落库
+ *   - afterToolCall  ：改写。结果摘要、工件抽取、工具调用落库
  *
  * 【本文件含 Pi 依赖】—— 仅 worker 侧使用，Next.js 侧禁止 import。
  */
 import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Model, Usage } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
-import { renderPrompt } from "../../prompts/loader";
-import { pruneByCharBudget } from "./context";
-import { checkToolAllowed, createFailureTracker } from "./guards";
-import { SKILL_CATALOG } from "./skill-catalog";
-import { extractArtifacts } from "./persist";
+import { renderPrompt } from "../../prompts/loader.ts";
+import { pruneByCharBudget, summarizeToolResult } from "./context.ts";
+import { checkToolAllowed, createFailureTracker } from "./guards.ts";
+import {
+  extractArtifacts,
+  finalizeToolCall as finalizeToolCallInDb,
+  persistToolCall as persistToolCallInDb,
+} from "./persist.ts";
+import { SKILL_CATALOG } from "./skill-catalog.ts";
 
-/** 默认字符预算（约 100k token，按字符数/2 估算） */
+/** 默认字符预算（约 100k token，按「字符数 / 2」估算） */
 const DEFAULT_CHAR_BUDGET = 200_000;
 
 /** 默认连续工具失败阈值 */
@@ -2683,6 +3239,23 @@ const DEFAULT_MAX_TOOL_FAILURES = 3;
 
 /** 默认单次运行墙钟超时（毫秒） */
 const DEFAULT_RUN_TIMEOUT_MS = 600_000;
+
+/** 工具结果摘要保留的列表条数 */
+const SUMMARY_LIST_LIMIT = 10;
+
+/** 本地中止原因：循环自己知道是谁按下的中止，必须显式记录 */
+type AbortReason = "timeout" | "tool_failures";
+
+/** 会话历史的一条消息（结构对齐 agent-service.listMessages 的返回值） */
+export interface StoredMessage {
+  role: string;
+  content: string;
+  toolCallId: string | null;
+}
+
+/** 工具调用落库函数签名（与 persist.ts 一致，便于测试注入假实现） */
+export type PersistToolCallFn = (options: Parameters<typeof persistToolCallInDb>[0]) => Promise<number>;
+export type FinalizeToolCallFn = (options: Parameters<typeof finalizeToolCallInDb>[0]) => Promise<void>;
 
 /** 渲染给模型的工具目录文本 */
 export function buildToolCatalogText(): string {
@@ -2692,11 +3265,124 @@ export function buildToolCatalogText(): string {
   ).join("\n");
 }
 
+/** 把 unknown 收窄成普通对象（工具 details 的静态类型是 any/unknown） */
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+/** 空 usage：历史消息不是本次请求的响应，只为满足 AssistantMessage 的类型 */
+function emptyUsage(): Usage {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+/**
+ * 把落库的会话历史还原成 Pi 的 AgentMessage 数组（**不含**本次的新用户消息）。
+ *
+ * P0 的有损之处（有意，登记为 P1）：agent_messages 只存了纯文本 content，没有存
+ * assistant 的 toolCalls 数组。孤立的 toolResult（没有配对的 toolCall）会被 provider
+ * 拒绝，因此这里**丢弃** role="tool" 的历史行 —— 多轮对话能续上，但模型看不到
+ * 「上一轮调过哪些工具」。P1 需在落库时写入 toolCalls/toolCallId 后再还原。
+ */
+function toAgentMessages(history: StoredMessage[], model: Model<"openai-completions">, now: number): Message[] {
+  const messages: Message[] = [];
+  for (const item of history) {
+    if (!item.content) continue;
+    if (item.role === "user") {
+      messages.push({ role: "user", content: item.content, timestamp: now });
+    } else if (item.role === "assistant") {
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: item.content }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: emptyUsage(),
+        stopReason: "stop",
+        timestamp: now,
+      });
+    }
+    // role === "tool"：见上方说明，P0 丢弃
+  }
+  return messages;
+}
+
+/** 取出助手消息里的纯文本（拼接所有 text 块） */
+function extractAssistantText(message: AssistantMessage): string {
+  return message.content
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
+export interface LoopOutcome {
+  /** 与 finishRun 的 status 联合类型一致，可直接透传 */
+  status: "succeeded" | "failed" | "cancelled";
+  errorType?: string;
+  /** 供事件落库与验收脚本阅读的可读结论 */
+  message: string;
+}
+
+/**
+ * 把「本地中止原因 + 最后一条 assistant 消息的 stopReason」映射成 Run 终态。
+ *
+ * 为什么不看 try/catch：Pi 的 StreamFn 契约明确要求「不得为请求/模型/运行时失败抛错」，
+ * 失败一律编码为最终 AssistantMessage 的 stopReason "error"/"aborted"；agent.abort()
+ * 也只是中止 AbortController，waitForIdle() 永远 resolve。只看有没有抛错，会把超时、
+ * 连续工具失败、Key 无效、限流、provider 500 全部记成 succeeded，并让绑定的 Task
+ * 变成 completed + progress 100。
+ *
+ * 映射是 fail-closed 的：只有明确的 "stop" 才算成功，未知 stopReason 一律失败。
+ */
+export function resolveLoopOutcome(input: { abortReason?: AbortReason; stopReason?: string; errorMessage?: string }): LoopOutcome {
+  if (input.abortReason === "timeout") {
+    return { status: "failed", errorType: "timeout", message: "运行超过墙钟上限被中止" };
+  }
+  if (input.abortReason === "tool_failures") {
+    return { status: "failed", errorType: "tool_failures", message: "连续工具调用失败被中止" };
+  }
+  switch (input.stopReason) {
+    case "stop":
+      return { status: "succeeded", message: "运行完成" };
+    case "error":
+      return {
+        status: "failed",
+        errorType: "model_error",
+        message: `模型请求失败：${input.errorMessage ?? "未提供错误信息"}`,
+      };
+    case "aborted":
+      // 本地中止已在上面分流，走到这里说明是外部中止
+      return { status: "cancelled", errorType: "aborted", message: "运行被中止" };
+    case "length":
+      return { status: "failed", errorType: "output_length", message: "输出被 token 上限截断" };
+    case "toolUse":
+      return { status: "failed", errorType: "unfinished_tool_use", message: "循环在仍有工具待调用时结束" };
+    case "pending":
+      return { status: "failed", errorType: "no_response", message: "循环结束时模型仍未给出响应" };
+    case "deferred":
+      return { status: "failed", errorType: "deferred_unsupported", message: "P0 不支持延迟响应（deferred）" };
+    default:
+      return {
+        status: "failed",
+        errorType: "unknown_stop_reason",
+        message: `未识别的 stopReason：${String(input.stopReason)}`,
+      };
+  }
+}
+
 export interface RunAgentLoopOptions {
   runId: number;
   conversationId: number;
   userId: number;
   userMessage: string;
+  /** 会话历史（**不含** userMessage —— 它由 prompt() 追加，重复喂会变成两条相同的 user 消息） */
+  historyMessages?: StoredMessage[];
   model: Model<"openai-completions">;
   tools: AgentTool[];
   apiKey?: string;
@@ -2704,21 +3390,28 @@ export interface RunAgentLoopOptions {
   /** 注入假 streamFn 供离线测试；不传则用 pi-ai 的真实实现 */
   fakeStreamFn?: StreamFn;
   persistEvent: (runId: number, event: Record<string, unknown>) => Promise<string>;
-  persistMessage?: (message: { role: string; content: string }) => Promise<void>;
+  persistMessage?: (message: { role: string; content: string; usage?: Usage }) => Promise<void>;
+  /** 注入工具调用落库实现（离线测试用）；不传则用 persist.ts 的真实实现 */
+  persistToolCall?: PersistToolCallFn;
+  finalizeToolCall?: FinalizeToolCallFn;
   charBudget?: number;
   maxToolFailures?: number;
   runTimeoutMs?: number;
 }
 
 export interface RunAgentLoopResult {
-  status: "succeeded" | "failed";
+  status: "succeeded" | "failed" | "cancelled";
   errorType?: string;
+  /** 本轮消耗的 token（逐轮累加模型上报的 usage.totalTokens） */
+  tokensUsed: number;
+  /** 本轮发起的工具调用次数（含被阻断的），与 agent_tool_calls.step_index 同口径 */
+  stepCount: number;
 }
 
 /**
  * 跑一次完整的 ReAct 循环。
  *
- * 所有事件经 persistEvent 落库；工具调用与工件经 afterToolCall 钩子处理。
+ * 事件经 persistEvent 落库；工具调用与工件在 afterToolCall 里处理（见文件头分工表）。
  */
 export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAgentLoopResult> {
   const { runId, userMessage, model, tools, apiKey, persistEvent, persistMessage } = options;
@@ -2726,9 +3419,44 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
   const maxToolFailures = options.maxToolFailures ?? DEFAULT_MAX_TOOL_FAILURES;
   const runTimeoutMs = options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   const failureTracker = createFailureTracker(maxToolFailures);
+  const persistToolCallRow = options.persistToolCall ?? persistToolCallInDb;
+  const finalizeToolCallRow = options.finalizeToolCall ?? finalizeToolCallInDb;
+  const history = options.historyMessages ?? [];
+
+  // 字符预算必须小于模型上下文窗口：本项目按「字符数 / 2」估 token，
+  // 估算值一旦不小于窗口，裁剪永远追不上，请求必然被 provider 拒绝 —— 提前失败并说明原因。
+  if (charBudget / 2 >= model.contextWindow) {
+    const message = `字符预算过大：charBudget/2=${charBudget / 2} 不小于模型上下文窗口 ${model.contextWindow}`;
+    await persistEvent(runId, { type: "error", message });
+    return { status: "failed", errorType: "char_budget_exceeds_context_window", tokensUsed: 0, stepCount: 0 };
+  }
 
   const systemPrompt =
     options.systemPrompt ?? renderPrompt("agent.md", "system", { toolCatalog: buildToolCatalogText() });
+
+  // ---- 循环自有的运行状态 ----
+  let stepIndex = 0; // 已发起的工具调用序号（= agent_tool_calls.step_index）
+  let tokensUsed = 0; // 逐轮累加的 usage.totalTokens
+  let abortReason: AbortReason | undefined;
+  let finalAssistant: AssistantMessage | undefined;
+  // 工具调用起点：toolCallId → { 落库行 id, stepIndex, 起始时刻 }
+  const toolCallRows = new Map<string, { rowId: number | null; stepIndex: number; startedAt: number }>();
+
+  /**
+   * 落库失败不能影响循环本身：
+   * afterToolCall 抛错会被 Pi 捕获并把该工具结果改写成 isError（一次数据库抖动会让模型
+   * 以为工具失败而重试，产生重复产出）；beforeToolCall 抛错则会让工具直接不执行。
+   * 这里一律吞掉异常并留一条 warning 事件。
+   */
+  const notePersistFailure = async (where: string, error: unknown): Promise<void> => {
+    const message = `落库失败（${where}）：${(error as Error).message}`;
+    console.error("[agent]", message);
+    try {
+      await persistEvent(runId, { type: "status", level: "warning", message });
+    } catch {
+      // 连事件都写不进去，只能靠上面的 console
+    }
+  };
 
   const agent = new Agent({
     streamFn: (options.fakeStreamFn ?? streamSimple) as never,
@@ -2737,101 +3465,232 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
       model,
       tools,
       systemPrompt,
+      // 历史消息（不含新用户消息：它由 prompt() 追加）
+      ...(history.length > 0 ? { messages: toAgentMessages(history, model, Date.now()) } : {}),
     },
-    // 上下文预算：字符数估算裁剪
-    transformContext: async (messages: never[]) => pruneByCharBudget(messages, charBudget) as never,
-    // 护栏：阻断 publish 级与未注册工具
-    beforeToolCall: async ({ toolCall }: { toolCall: { name: string } }) => {
-      const verdict = checkToolAllowed(toolCall.name);
+    // 上下文预算：字符数估算裁剪（保底保留最新 user 消息，见 context.ts）。
+    // **不要**给 messages 标 `never[]`：AgentMessage[] 不可赋给 never[]，会报 TS2322（已实测）。
+    // 省略参数类型、交给 AgentOptions 做上下文推断即可，这样连断言都不需要。
+    transformContext: async (messages) => pruneByCharBudget(messages, charBudget),
+    beforeToolCall: async (context) => {
+      const step = stepIndex;
+      stepIndex += 1;
+      const entry: { rowId: number | null; stepIndex: number; startedAt: number } = {
+        rowId: null,
+        stepIndex: step,
+        startedAt: Date.now(),
+      };
+      toolCallRows.set(context.toolCall.id, entry);
+
+      const verdict = checkToolAllowed(context.toolCall.name);
       if (!verdict.allowed) {
+        // 阻断的调用**不会**走 afterToolCall（Pi 直接构造错误结果返回），
+        // 所以 blocked 记录必须在这里落 —— 这里才是「决定阻断」的地方。
+        try {
+          entry.rowId = await persistToolCallRow({
+            runId,
+            stepIndex: step,
+            toolName: context.toolCall.name,
+            toolCallId: context.toolCall.id,
+            params: asRecord(context.args),
+            result: null,
+            status: "blocked",
+            errorType: "guard_blocked",
+          });
+        } catch (error) {
+          await notePersistFailure("beforeToolCall/blocked", error);
+        }
+        // 注意 checkToolAllowed 放行时返回 { allowed: true } 且**没有** reason 字段：
+        // 若写成 return { block: verdict.allowed, reason: verdict.reason }，
+        // 放行路径会得到 { block: true }，把**每一个**工具调用都阻断。必须显式分支。
         return { block: true, reason: verdict.reason };
       }
+
+      try {
+        entry.rowId = await persistToolCallRow({
+          runId,
+          stepIndex: step,
+          toolName: context.toolCall.name,
+          toolCallId: context.toolCall.id,
+          params: asRecord(context.args),
+          result: null,
+          status: "running",
+        });
+      } catch (error) {
+        // 落库失败不阻断执行：afterToolCall 里会用已分配的 stepIndex 补一条终态记录
+        await notePersistFailure("beforeToolCall/running", error);
+      }
       return undefined;
+    },
+    afterToolCall: async (context) => {
+      const entry = toolCallRows.get(context.toolCall.id);
+      const details = asRecord(context.result.details);
+      const isError = context.isError;
+      const durationMs = entry ? Date.now() - entry.startedAt : null;
+
+      // 1) 工具调用落库（正常执行路径）
+      try {
+        if (entry?.rowId != null) {
+          await finalizeToolCallRow({
+            id: entry.rowId,
+            result: details,
+            status: isError ? "failed" : "succeeded",
+            errorType: isError ? "tool_error" : null,
+            durationMs,
+          });
+        } else {
+          await persistToolCallRow({
+            runId,
+            stepIndex: entry?.stepIndex ?? stepIndex,
+            toolName: context.toolCall.name,
+            toolCallId: context.toolCall.id,
+            params: asRecord(context.args),
+            result: details,
+            status: isError ? "failed" : "succeeded",
+            errorType: isError ? "tool_error" : null,
+            durationMs,
+          });
+        }
+      } catch (error) {
+        await notePersistFailure("afterToolCall/toolCall", error);
+      }
+
+      // 2) 工件抽取：只认结构化 details（extractArtifacts 的单一真相源）
+      if (!isError) {
+        try {
+          for (const artifact of extractArtifacts(context.toolCall.name, details)) {
+            await persistEvent(runId, { type: "artifact", ...artifact });
+          }
+        } catch (error) {
+          await notePersistFailure("afterToolCall/artifact", error);
+        }
+      }
+
+      // 3) 结果摘要：只改模型可见的 content，**绝不改 details**（extractArtifacts 依赖它）。
+      //    出错时不改 —— 错误文本必须原样给模型看；details 为空时也不改，避免把
+      //    工具自己写的 content 覆盖成 "{}"。
+      if (isError || Object.keys(details).length === 0) return undefined;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(summarizeToolResult(details, SUMMARY_LIST_LIMIT)) }],
+      };
     },
     toolExecution: "sequential",
     sessionId: `conv-${options.conversationId}`,
   });
 
-  // 事件 → 落库
+  // 事件 → 落库（subscribe 只能观察，不能改写工具结果）
   agent.subscribe(async (event: unknown) => {
     const record = event as Record<string, unknown>;
-    await persistEvent(runId, record);
+    try {
+      await persistEvent(runId, record);
+    } catch (error) {
+      console.error("[agent] 事件落库失败", error);
+    }
 
-    // 工具执行结束 → 抽取工件并落 artifact 事件；同时累计连续失败
-    if (record.type === "tool_execution_end") {
-      const toolName = String(record.toolName ?? "");
-      const isError = Boolean(record.isError);
-      const failure = failureTracker.record(!isError);
-      if (failure.exceeded) {
-        await persistEvent(runId, {
-          type: "status",
-          level: "error",
-          message: `连续 ${failure.count} 次工具调用失败，已停止执行`,
-        });
-        agent.abort();
-        return;
+    // 逐轮累计 token：usage 只在 message_end 的最终消息上完整
+    if (record.type === "message_end") {
+      const message = record.message as Partial<AssistantMessage> | undefined;
+      if (message?.role === "assistant") {
+        finalAssistant = message as AssistantMessage;
+        tokensUsed += Number(message.usage?.totalTokens ?? 0);
       }
-      const result = record.result as { details?: Record<string, unknown> } | undefined;
-      const artifacts = extractArtifacts(toolName, result?.details ?? {});
-      for (const artifact of artifacts) {
-        await persistEvent(runId, { type: "artifact", ...artifact });
+    }
+
+    // 连续失败计数（含被阻断的调用：阻断同样是「模型做错了」的信号）
+    if (record.type === "tool_execution_end") {
+      const failure = failureTracker.record(!record.isError);
+      if (failure.exceeded && !abortReason) {
+        abortReason = "tool_failures";
+        try {
+          await persistEvent(runId, {
+            type: "status",
+            level: "error",
+            message: `连续 ${failure.count} 次工具调用失败，已停止执行`,
+          });
+        } catch (error) {
+          console.error("[agent] 落库失败（失败计数）", error);
+        }
+        agent.abort();
       }
     }
   });
 
-  // 墙钟超时：到点中止循环（已产出的工件仍然有效）
+  // 墙钟超时：到点中止循环（已产出的工件仍然有效）。
+  // 必须显式记录中止原因 —— abort() 只是中止 AbortController，waitForIdle() 会正常 resolve。
+  let runFinished = false;
   const timeoutTimer = setTimeout(() => {
+    // 循环已结束时不要改写中止原因：否则会把成功的 Run 误报成超时
+    if (runFinished) return;
+    abortReason = "timeout";
     void persistEvent(runId, {
       type: "status",
       level: "warning",
       message: `执行超过 ${Math.round(runTimeoutMs / 60_000)} 分钟，已中止`,
-    });
+    }).catch(() => undefined);
     agent.abort();
   }, runTimeoutMs);
 
   try {
     await agent.prompt(userMessage);
+    // 关键：waitForIdle() 不会因失败而 reject，失败被编码在 stopReason 里（见 resolveLoopOutcome）
     await agent.waitForIdle();
-
-    if (persistMessage) {
-      const last = agent.state.messages[agent.state.messages.length - 1] as
-        | { role?: string; content?: Array<{ type?: string; text?: string }> }
-        | undefined;
-      const text = (last?.content ?? [])
-        .filter((block) => block.type === "text" && typeof block.text === "string")
-        .map((block) => block.text as string)
-        .join("");
-      if (text) await persistMessage({ role: "assistant", content: text });
-    }
-
-    return { status: "succeeded" };
   } catch (error) {
-    await persistEvent(runId, {
-      type: "error",
-      message: (error as Error).message,
-    });
-    return { status: "failed", errorType: "loop_error" };
+    // 兜底：prompt 的前置校验等仍可能抛错
+    await persistEvent(runId, { type: "error", message: (error as Error).message }).catch(() => undefined);
+    return { status: "failed", errorType: "loop_error", tokensUsed, stepCount: stepIndex };
   } finally {
+    runFinished = true;
     clearTimeout(timeoutTimer);
   }
+
+  const outcome = finalAssistant
+    ? resolveLoopOutcome({
+        abortReason,
+        stopReason: finalAssistant.stopReason,
+        errorMessage: finalAssistant.errorMessage,
+      })
+    : { status: "failed" as const, errorType: "no_assistant_message", message: "循环结束但没有产生任何助手消息" };
+
+  await persistEvent(runId, {
+    type: "status",
+    level: outcome.status === "succeeded" ? "info" : "error",
+    message: outcome.message,
+  }).catch(() => undefined);
+
+  // 最终答复落库（失败/超时时若有部分文本也保留，前端按 Run 状态展示）
+  const answerText = finalAssistant ? extractAssistantText(finalAssistant) : "";
+  if (persistMessage && answerText) {
+    try {
+      await persistMessage({ role: "assistant", content: answerText, usage: finalAssistant?.usage });
+    } catch (error) {
+      await notePersistFailure("persistMessage", error);
+    }
+  }
+
+  return { status: outcome.status, errorType: outcome.errorType, tokensUsed, stepCount: stepIndex };
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+**若假 streamFn 与 pi-ai 的流协议不匹配**（循环报错拿不到最终消息），按 `AssistantMessageEvent` 的实际类型定义调整 `createFakeStream` 的 `events` 数组。这一步是 P0 的关键验证点 —— 假 streamFn 跑通，说明循环可离线测试。
+
+**关于 `.mts` 里的相对导入后缀**：本文件的相对导入一律显式写 `.ts`/`.mts`。Pi 包是 ESM-only，tsx 按真 ESM 加载 `.mts`，显式后缀可绕开 ESM 不做扩展名推断的问题；`tsc` 已开 `allowImportingTsExtensions`，不会报 `TS5097`。
+
+- [ ] **Step 8: 运行测试与类型检查**
 
 ```bash
-npx vitest run src/lib/server/agent/agent-loop.test.ts
+npx vitest run
+npx tsc --noEmit
 ```
 
-Expected: PASS，3 个测试全通过。
+Expected: 全绿。**不要预测用例数** —— 本项目多次出现「计划预测的计数与实际不符」，一律以下一次 `npx vitest run` 的实际输出为准。
 
-**若假 streamFn 与 pi-ai 的流协议不匹配**（`createFakeStream` 的事件形状不对导致循环报错），按 `AssistantMessageEvent` 的实际类型定义调整 `events` 数组。这一步是 P0 的关键验证点 —— 假 streamFn 跑通，说明循环可离线测试。
-
-- [ ] **Step 6: 提交**
+- [ ] **Step 9: 提交**
 
 ```bash
-git add src/prompts/agent.md src/lib/server/agent/agent-loop.ts src/lib/server/agent/agent-loop.test.ts
-git commit -m "feat(agent): 新增 Agent 系统提示词与循环装配，支持注入假 streamFn 离线测试"
+git add src/prompts/agent.md src/lib/server/agent/agent-loop.mts src/lib/server/agent/agent-loop.test.ts \
+  src/lib/server/agent/context.ts src/lib/server/agent/context.test.ts \
+  src/lib/server/agent/persist.ts src/lib/server/agent/tool-registry.mts src/lib/server/agent/tool-registry.test.ts
+git commit -m "feat(agent): 新增 Agent 系统提示词与循环装配（工具调用落库/失败判定/多轮历史）"
 ```
 
 ---
@@ -2839,17 +3698,55 @@ git commit -m "feat(agent): 新增 Agent 系统提示词与循环装配，支持
 ## Task 11: worker 接入 agent_run_runner 与崩溃清扫
 
 **Files:**
-- Modify: `src/worker/index.ts`
+- Rename: `src/worker/index.ts` → `src/worker/index.mts`（**必须改名**：它要 import `agent-loop.mts`，按 D17，凡直接或间接 import Pi 的文件都必须是 `.mts`，否则 tsx 会按 CJS 加载而在模块解析阶段失败）
+- Modify: `package.json`（worker 脚本改为 `tsx src/worker/index.mts`）
+- Modify: `src/lib/server/services/agent-service.ts`（`listMessages` 增加可选的 `excludeMessageId`）
 
-- [ ] **Step 1: 加入 runAgentRunOnce 实现**
+- [ ] **Step 1: 改文件名与启动脚本**
 
-在 `src/worker/index.ts` 的 import 区追加：
+```bash
+cd F:/project/code/xhs-assistant
+git mv src/worker/index.ts src/worker/index.mts
+```
+
+把 `package.json` 的 `"worker": "tsx src/worker/index.ts"` 改为 `"worker": "tsx src/worker/index.mts"`。
+
+- [ ] **Step 2: 给 `listMessages` 加 `excludeMessageId`**
+
+多轮上下文需要「本次触发消息之前」的历史；触发消息本身要由 `prompt()` 追加，不能既当历史又当新消息（否则模型看到两条相同的提问）。编辑 `src/lib/server/services/agent-service.ts`：
 
 ```ts
-import { claimPendingRuns, finishRun, sweepStuckRuns, updateConversationStatus } from "../lib/server/services/agent-service";
-import { buildAgentTools } from "../lib/server/agent/tool-registry";
-import { buildPiModel } from "../lib/server/agent/model-bridge";
-import { runAgentLoop } from "../lib/server/agent/agent-loop";
+/**
+ * 取会话消息（供循环组装上下文）。
+ * excludeMessageId：排除某条消息（worker 用它排除本次触发的用户消息）。
+ */
+export async function listMessages(
+  conversationId: number,
+  limit = 100,
+  excludeMessageId?: number,
+): Promise<Array<{ role: string; content: string; toolCallId: string | null }>> {
+  const messages = await prisma.agentMessage.findMany({
+    where: { conversationId, ...(excludeMessageId !== undefined ? { id: { not: excludeMessageId } } : {}) },
+    orderBy: { id: "asc" },
+    take: limit,
+  });
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    toolCallId: message.toolCallId,
+  }));
+}
+```
+
+- [ ] **Step 3: 加入 runAgentRunOnce 实现**
+
+在 `src/worker/index.mts` 的 import 区追加（**Pi 相关模块显式带 `.mts` 后缀**）：
+
+```ts
+import { claimPendingRuns, finishRun, listMessages, sweepStuckRuns, updateConversationStatus } from "../lib/server/services/agent-service";
+import { buildAgentTools } from "../lib/server/agent/tool-registry.mts";
+import { buildPiModel } from "../lib/server/agent/model-bridge.mts";
+import { runAgentLoop } from "../lib/server/agent/agent-loop.mts";
 import { persistAgentEvent } from "../lib/server/agent/persist";
 import { prisma } from "../lib/server/core/db";
 import { decryptText } from "../lib/server/core/security";
@@ -2890,6 +3787,7 @@ async function executeAgentRun(run: {
   userId: number;
   conversationId: number;
   taskId: number;
+  triggerMessageId: number | null;
   maxSteps: number;
   tokenBudget: number;
 }): Promise<void> {
@@ -2911,13 +3809,16 @@ async function executeAgentRun(run: {
     return;
   }
 
-  let stepCount = 0;
+  // 多轮对话的历史来源：排除本次触发的用户消息 ——
+  // 它会由 runAgentLoop 的 prompt() 追加，若同时 seed 进历史就会变成两条相同的提问。
+  const history = await listMessages(run.conversationId, 100, triggerMessage.id);
 
   const result = await runAgentLoop({
     runId: run.id,
     conversationId: run.conversationId,
     userId: run.userId,
     userMessage: triggerMessage.content,
+    historyMessages: history,
     model: buildPiModel(modelConfig),
     apiKey,
     tools: buildAgentTools({
@@ -2930,7 +3831,6 @@ async function executeAgentRun(run: {
     runTimeoutMs: AGENT_RUN_TIMEOUT_MS,
     persistEvent: async (runId, event) => {
       await persistAgentEvent(runId, event);
-      if (event.type === "turn_end") stepCount += 1;
       const latest = await prisma.agentEvent.findFirst({ where: { runId }, orderBy: { id: "desc" } });
       return String(latest?.id ?? "0");
     },
@@ -2941,6 +3841,8 @@ async function executeAgentRun(run: {
           runId: run.id,
           role: message.role,
           content: message.content,
+          // tokenUsage 存该条消息自身的用量；Run 级累计走 agent_runs.tokens_used
+          ...(message.usage ? { tokenUsage: message.usage as unknown as Prisma.InputJsonValue } : {}),
           // createdAt 无库级默认值，必须显式传（全库一致约定）
           createdAt: shanghaiNow(),
         },
@@ -2948,11 +3850,13 @@ async function executeAgentRun(run: {
     },
   });
 
+  // tokensUsed / stepCount 由循环自己统计（不再靠数 turn_end 事件 —— 那样拿不到 token）
   await finishRun({
     runId: run.id,
     status: result.status,
     errorType: result.errorType ?? null,
-    stepCount,
+    stepCount: result.stepCount,
+    tokensUsed: result.tokensUsed,
   });
 
   // 会话回到 idle；若标题仍是默认值则按首条用户消息派生。
@@ -2981,7 +3885,11 @@ async function sweepAgentRuns(): Promise<void> {
 }
 ```
 
-- [ ] **Step 2: 注册到调度**
+同时给 import 区补 `import type { Prisma } from "@prisma/client";`（`persistMessage` 里写 `tokenUsage` 要用）。
+
+**`executeAgentRun` 的参数类型**：`claimPendingRuns` 返回完整的 `AgentRun` 行，所以直接写 `async function executeAgentRun(run: AgentRun): Promise<void>` 最省事（记得 import `type { AgentRun } from "@prisma/client"`）。上面展开字段只是为了讲清用到哪些列。
+
+- [ ] **Step 4: 注册到调度**
 
 在 `main()` 中，`comment_reply_runner` 那行之后追加：
 
@@ -3002,7 +3910,7 @@ const agentRunMutex = new Mutex();
   void sweepAgentRuns();
 ```
 
-- [ ] **Step 3: 类型检查与构建验证**
+- [ ] **Step 5: 类型检查与构建验证**
 
 ```bash
 cd F:/project/code/xhs-assistant
@@ -3011,14 +3919,7 @@ npx tsc --noEmit
 
 Expected: 无错误。
 
-若报 `executeAgentRun` 的参数类型与 `claimPendingRuns` 返回类型不匹配，把参数类型改为直接用 `AgentRun`：
-
-```ts
-import type { AgentRun } from "@prisma/client";
-async function executeAgentRun(run: AgentRun): Promise<void> {
-```
-
-- [ ] **Step 4: 确认 Next.js 侧未引入 Pi**
+- [ ] **Step 6: 确认 Next.js 侧未引入 Pi**
 
 ```bash
 grep -rn "@earendil-works/pi" src/app/ src/lib/api.ts src/lib/server/services/ src/components/ && echo "❌ 违规：Next.js 侧引入了 Pi" || echo "✅ 通过：Pi 仅在 worker 相关模块"
@@ -3028,18 +3929,22 @@ Expected: `✅ 通过：Pi 仅在 worker 相关模块`
 
 如果 grep 有输出，说明违反了架构铁律，必须把该 import 移到 worker 侧。
 
-- [ ] **Step 5: 启动 worker 验证加载**
+- [ ] **Step 7: 启动 worker 验证加载**
 
 ```bash
-npx tsx src/worker/index.ts
+npx tsx src/worker/index.mts
 ```
 
 Expected: 输出包含 `[worker] 已注册任务 agent_run_runner：cron=*/3 * * * * *`，且无模块加载错误。按 Ctrl+C 退出。
 
-- [ ] **Step 6: 提交**
+**这一步会真实暴露 ESM 解析问题**：若报 `ERR_MODULE_NOT_FOUND`，说明 `.mts` 里的相对导入缺后缀 —— 给 `agent-loop.mts` / `tool-registry.mts` / `model-bridge.mts` / `index.mts` 中的相对导入逐个补显式 `.ts` / `.mts` 后缀（`tool-registry.mts` 现有的 `from "./skill-catalog"`、`from "./tool-schemas"` 是候选）。不要用 `--tsconfig` 或改写 `package.json` 的 `type` 来绕过。
+
+**已实测**：`.mts` 里用显式 `.ts` 后缀 import 依赖 `@prisma/client` 的 `.ts` 模块（`persist.ts` / `core/db.ts` / `ai-service.ts`），在 tsx 下可正常加载（`npx tsx` 实测通过）。所以 worker 改成 `.mts` 后，只要相对导入带上显式后缀，Prisma 侧的 CJS 互操作不是问题。
+
+- [ ] **Step 8: 提交**
 
 ```bash
-git add src/worker/index.ts
+git add src/worker/index.mts package.json src/lib/server/services/agent-service.ts
 git commit -m "feat(worker): 接入 agent_run_runner 与启动时崩溃清扫"
 ```
 
@@ -3050,6 +3955,10 @@ git commit -m "feat(worker): 接入 agent_run_runner 与启动时崩溃清扫"
 **Files:**
 - Create: `src/scripts/agent-smoke.ts`（验收脚本，保留在仓库中作为回归工具）
 
+**注意脚本用 `.ts` 而不是 `.mts`**：它不 import Pi（架构铁律里只有 5 个文件是 `.mts`），`.ts` 走 tsx 的 CJS 路径，`@prisma/client` 这类 CJS 依赖的互操作面最小（Task 1 的 `verify-agent-tables.ts` 已验证这条路可行）。
+
+**本脚本必须能失败**：每条验收项都用 `assert` 断言，任一不通过即 `exit 1`。只打印不断言的脚本会让人误以为「全绿」。
+
 - [ ] **Step 1: 编写验收脚本**
 
 创建 `src/scripts/agent-smoke.ts`：
@@ -3059,16 +3968,26 @@ git commit -m "feat(worker): 接入 agent_run_runner 与启动时崩溃清扫"
  * Agent P0 端到端验收脚本
  *
  * 用法：
- *   1. 另开终端运行 worker：npx tsx src/worker/index.ts
+ *   1. 另开终端运行 worker：npx tsx src/worker/index.mts
  *   2. 运行本脚本：npx tsx src/scripts/agent-smoke.ts
  *
- * 验收标准：
- *   - 会话与 Run 被创建
- *   - agent_events 表产生完整事件序列（agent_start → … → agent_end）
- *   - ai_draft 表出现新草稿（证明工具真的被调用并落库）
+ * 验收项（任一不通过即 exit 1）：
+ *   1. 正常路径：Run = succeeded，事件序列完整（agent_start → … → agent_end）
+ *   2. 工具调用落库：agent_tool_calls 至少一行、status=succeeded、stepIndex 从 0 连续递增
+ *   3. 产出落库：真被调用的工具在它自己的业务表里留下了行
+ *   4. token 计量：Run.tokensUsed > 0
+ *   5. 失败路径：模型地址不可达时 Run 记为 failed，**不是** succeeded
+ *   6. 崩溃清扫：卡死的 Run 与它绑定的 Task 双双变 failed
  */
 import { prisma } from "../lib/server/core/db";
-import { createConversation, appendMessage, createRunForMessage } from "../lib/server/services/agent-service";
+import { encryptText } from "../lib/server/core/security";
+import { shanghaiNow } from "../lib/server/core/time";
+import { appendMessage, createConversation, createRunForMessage, sweepStuckRuns } from "../lib/server/services/agent-service";
+
+/** 断言：不通过就抛错 —— 验收脚本必须能失败 */
+function assert(condition: boolean, message: string): void {
+  if (!condition) throw new Error(`验收未通过：${message}`);
+}
 
 /** 轮询等待 Run 结束 */
 async function waitForRun(runId: number, timeoutMs: number): Promise<string> {
@@ -3081,16 +4000,27 @@ async function waitForRun(runId: number, timeoutMs: number): Promise<string> {
   return "timeout";
 }
 
+/** 清掉一次 Run 相关的全部行 */
+async function cleanupRun(runId: number, conversationId: number, taskId: number): Promise<void> {
+  await prisma.agentEvent.deleteMany({ where: { runId } });
+  await prisma.agentToolCall.deleteMany({ where: { runId } });
+  await prisma.agentRun.delete({ where: { id: runId } });
+  await prisma.task.delete({ where: { id: taskId } }).catch(() => undefined);
+  await prisma.agentMessage.deleteMany({ where: { conversationId } });
+  await prisma.agentConversation.delete({ where: { id: conversationId } });
+}
+
 async function main(): Promise<void> {
   const user = await prisma.user.findFirst({ orderBy: { id: "asc" } });
   if (!user) throw new Error("数据库里没有用户，请先注册一个账号");
   console.log("使用用户:", user.id);
 
+  // ========== 1) 正常路径 ==========
+  const suggestionCountBefore = await prisma.topicSuggestion.count({ where: { userId: user.id } });
   const draftCountBefore = await prisma.aiDraft.count({ where: { userId: user.id } });
 
   const conversation = await createConversation(user.id);
   console.log("创建会话:", conversation.id);
-
   const prompt = "帮我生成 2 个露营主题的小红书选题";
   const message = await appendMessage({ conversationId: conversation.id, role: "user", content: prompt });
   const run = await createRunForMessage({
@@ -3099,27 +4029,152 @@ async function main(): Promise<void> {
     messageId: message.id,
   });
   console.log("创建 Run:", run.id, "taskId:", run.taskId);
-  console.log("等待 worker 执行（最长 5 分钟）...");
 
+  // 建 Run 后会话必须立刻进入 running（前端据此禁用输入框、显示加载态）
+  const runningConversation = await prisma.agentConversation.findUnique({ where: { id: conversation.id } });
+  assert(runningConversation?.status === "running", `建 Run 后会话状态应为 running，实际 ${runningConversation?.status}`);
+
+  console.log("等待 worker 执行（最长 5 分钟）...");
   const status = await waitForRun(run.id, 5 * 60 * 1000);
   console.log("Run 最终状态:", status);
+  assert(status === "succeeded", `Run 最终状态应为 succeeded，实际 ${status}`);
 
   const events = await prisma.agentEvent.findMany({
     where: { runId: run.id },
     orderBy: { id: "asc" },
     select: { type: true },
   });
-  console.log("事件序列:", events.map((event) => event.type).join(" → "));
+  const eventTypes = events.map((event) => event.type);
+  console.log("事件序列:", eventTypes.join(" → "));
+  assert(eventTypes[0] === "agent_start", "事件序列第一项应为 agent_start");
+  assert(eventTypes.includes("tool_execution_end"), "没有任何工具被调用（事件序列里没有 tool_execution_end）");
+  assert(eventTypes[eventTypes.length - 1] === "agent_end", "事件序列最后一项应为 agent_end");
 
+  // 工具调用必须真的落到了 agent_tool_calls（C1：旧计划里这张表没有任何写入方，永远是空的）
+  const toolCalls = await prisma.agentToolCall.findMany({ where: { runId: run.id }, orderBy: { stepIndex: "asc" } });
+  console.log("工具调用:", toolCalls.map((row) => `${row.stepIndex}:${row.toolName}:${row.status}`).join(", ") || "（无）");
+  assert(toolCalls.length >= 1, "agent_tool_calls 一行都没有（工具调用落库没生效）");
+  assert(
+    toolCalls.every((row) => row.status === "succeeded"),
+    `工具调用状态应全为 succeeded，实际 ${toolCalls.map((row) => row.status).join(",")}`,
+  );
+  assert(
+    toolCalls.every((row, index) => row.stepIndex === index),
+    `stepIndex 应为 0..n-1 连续递增，实际 ${toolCalls.map((row) => row.stepIndex).join(",")}`,
+  );
+  assert(toolCalls.every((row) => row.toolCallId.length > 0), "工具调用缺少 toolCallId");
+
+  // token 计量：没有它，P1 的预算拦截就没有基线数据
+  const finishedRun = await prisma.agentRun.findUnique({ where: { id: run.id } });
+  console.log("tokensUsed:", finishedRun?.tokensUsed, "stepCount:", finishedRun?.stepCount);
+  assert((finishedRun?.tokensUsed ?? 0) > 0, "Run.tokensUsed 为 0（token 计量没生效）");
+
+  // 事件里的 usage 也必须留下来 —— 否则 token 明细无法从库里复算
+  const messageEndEvents = await prisma.agentEvent.findMany({
+    where: { runId: run.id, type: "message_end" },
+    select: { payload: true },
+  });
+  const hasUsage = messageEndEvents.some((event) => {
+    const payload = event.payload as { role?: string; usage?: { totalTokens?: number } };
+    return payload.role === "assistant" && (payload.usage?.totalTokens ?? 0) > 0;
+  });
+  assert(hasUsage, "agent_events 的 message_end 载荷里没有 usage（serializeEventForDb 把它丢了）");
+
+  // 产出落库：按「实际被调用的工具」去它自己的业务表里核对
+  const suggestionCountAfter = await prisma.topicSuggestion.count({ where: { userId: user.id } });
   const draftCountAfter = await prisma.aiDraft.count({ where: { userId: user.id } });
-  console.log(`草稿数：${draftCountBefore} → ${draftCountAfter}`);
+  console.log(`选题数：${suggestionCountBefore} → ${suggestionCountAfter}；草稿数：${draftCountBefore} → ${draftCountAfter}`);
+  const calledTools = toolCalls.map((row) => row.toolName);
+  if (calledTools.includes("topic.generate")) {
+    assert(suggestionCountAfter > suggestionCountBefore, "调用了 topic.generate，但 topic_suggestions 没有新增行");
+  }
+  if (calledTools.includes("content.notePack")) {
+    assert(draftCountAfter > draftCountBefore, "调用了 content.notePack，但 ai_drafts 没有新增行");
+  }
 
-  await prisma.agentEvent.deleteMany({ where: { runId: run.id } });
-  await prisma.agentToolCall.deleteMany({ where: { runId: run.id } });
-  await prisma.agentRun.delete({ where: { id: run.id } });
-  await prisma.agentMessage.deleteMany({ where: { conversationId: conversation.id } });
-  await prisma.agentConversation.delete({ where: { id: conversation.id } });
-  console.log("清理完成");
+  // 会话回到 idle，标题按首条用户消息派生
+  const idleConversation = await prisma.agentConversation.findUnique({ where: { id: conversation.id } });
+  assert(idleConversation?.status === "idle", `Run 结束后会话应回到 idle，实际 ${idleConversation?.status}`);
+  assert(idleConversation?.title !== "新任务", "会话标题未按首条用户消息派生");
+
+  await cleanupRun(run.id, conversation.id, run.taskId);
+  console.log("正常路径验收通过，已清理");
+
+  // ========== 2) 失败路径：模型地址不可达，必须记为 failed ==========
+  // 用临时用户 + 指向 discard 端口的默认文本模型，走**真实的**模型失败链路：
+  // streamSimple 连接失败 → Pi 把失败编码成 stopReason="error" → 循环必须判成 failed。
+  // 这是 C2 的端到端验证：旧实现会把它记成 succeeded，并让 Task 变成 completed + 100%。
+  const tempUser = await prisma.user.create({
+    data: { username: `agent_smoke_${Date.now()}`, passwordHash: "not-a-real-hash", createdAt: shanghaiNow() },
+  });
+  const tempModel = await prisma.modelConfig.create({
+    data: {
+      userId: tempUser.id,
+      name: "验收用（不可达地址）",
+      modelType: "text",
+      provider: "openai-compatible",
+      modelName: "gpt-4o-mini",
+      baseUrl: "http://127.0.0.1:9/v1", // discard 端口：连接立即被拒
+      encryptedApiKey: encryptText("sk-smoke-invalid"),
+      isDefault: true,
+    },
+  });
+  const failedConversation = await createConversation(tempUser.id);
+  const failedMessage = await appendMessage({ conversationId: failedConversation.id, role: "user", content: "这条一定会失败" });
+  const failedRun = await createRunForMessage({
+    conversationId: failedConversation.id,
+    userId: tempUser.id,
+    messageId: failedMessage.id,
+  });
+  const failedStatus = await waitForRun(failedRun.id, 2 * 60 * 1000);
+  const failedRunRow = await prisma.agentRun.findUnique({ where: { id: failedRun.id } });
+  console.log("故意失败的 Run 最终状态:", failedStatus, "errorType:", failedRunRow?.errorType);
+  assert(failedStatus === "failed", `模型不可达时 Run 应为 failed，实际 ${failedStatus}`);
+  assert(
+    failedRunRow?.errorType === "model_error",
+    `失败 Run 的 errorType 应为 model_error，实际 ${failedRunRow?.errorType}（若为 loop_error，说明失败发生在 prompt 前置阶段，检查 buildPiModel / getApiKey 链路）`,
+  );
+  const failedTask = await prisma.task.findUnique({ where: { id: failedRun.taskId } });
+  assert(failedTask?.status === "failed", `失败 Run 绑定的 Task 应为 failed，实际 ${failedTask?.status}`);
+
+  await cleanupRun(failedRun.id, failedConversation.id, failedRun.taskId);
+  await prisma.modelConfig.delete({ where: { id: tempModel.id } });
+  await prisma.user.delete({ where: { id: tempUser.id } });
+  console.log("失败路径验收通过，已清理");
+
+  // ========== 3) 崩溃清扫：卡死的 Run 必须连同它的 Task 一起失败 ==========
+  const stuckConversation = await createConversation(user.id, "清扫验收");
+  const stuckTask = await prisma.task.create({
+    data: { userId: user.id, platform: "xhs", taskType: "agent_run", status: "pending", progress: 0, createdAt: shanghaiNow() },
+  });
+  const oneHourAgo = new Date(shanghaiNow().getTime() - 60 * 60 * 1000);
+  const stuckRun = await prisma.agentRun.create({
+    data: {
+      conversationId: stuckConversation.id,
+      userId: user.id,
+      taskId: stuckTask.id,
+      status: "running",
+      startedAt: oneHourAgo,
+      createdAt: oneHourAgo,
+    },
+  });
+  const swept = await sweepStuckRuns(15);
+  console.log("本次清扫的 Run 数量:", swept);
+  assert(swept >= 1, "sweepStuckRuns 没有清扫到卡死的 Run");
+  const sweptRun = await prisma.agentRun.findUnique({ where: { id: stuckRun.id } });
+  assert(
+    sweptRun?.status === "failed" && sweptRun.errorType === "worker_restart",
+    `卡死的 Run 应被标记为 failed/worker_restart，实际 ${sweptRun?.status}/${sweptRun?.errorType}`,
+  );
+  const sweptTask = await prisma.task.findUnique({ where: { id: stuckTask.id } });
+  assert(sweptTask?.status === "failed", `卡死 Run 关联的 Task 仍停在 ${sweptTask?.status}（Run 与 Task 不同步）`);
+
+  await prisma.agentRun.delete({ where: { id: stuckRun.id } });
+  await prisma.task.delete({ where: { id: stuckTask.id } });
+  await prisma.agentConversation.delete({ where: { id: stuckConversation.id } });
+  console.log("崩溃清扫验收通过，已清理");
+
+  console.log("P0 验收全部通过");
 }
 
 main()
@@ -3136,7 +4191,7 @@ main()
 
 ```bash
 cd F:/project/code/xhs-assistant
-npx tsx src/worker/index.ts
+npx tsx src/worker/index.mts
 ```
 
 终端 B：
@@ -3145,13 +4200,17 @@ npx tsx src/worker/index.ts
 npx tsx src/scripts/agent-smoke.ts
 ```
 
-Expected 输出（关键四行）：
+Expected 输出（关键行）：
 
 ```
-创建 Run: <id> taskId: <id>
 Run 最终状态: succeeded
-事件序列: agent_start → turn_start → ... → agent_end
-草稿数：N → N+2
+事件序列: agent_start → turn_start → ... → tool_execution_end → ... → agent_end
+工具调用: 0:topic.generate:succeeded
+tokensUsed: 1234 stepCount: 1
+选题数：N → N+2
+故意失败的 Run 最终状态: failed errorType: model_error
+本次清扫的 Run 数量: 1
+P0 验收全部通过
 ```
 
 **验收判定**：
@@ -3160,7 +4219,11 @@ Run 最终状态: succeeded
 |---|---|
 | 循环跑通 | Run 状态为 `succeeded` |
 | 事件完整 | 序列含 `agent_start`、`agent_end`，且中间有 `tool_execution_end` |
-| 工具真被调用 | 草稿数增加（证明 `topic.generate` 落库了选题；若模型选择 `content.notePack` 则也应有草稿）|
+| **工具调用已落库** | `agent_tool_calls` 至少一行，`status` 为 `succeeded`，`stepIndex` 为 `0..n-1` |
+| 工具真被调用 | 按被调用的工具名核对其业务表（`topic.generate` → `topic_suggestions` 增加；`content.notePack` → `ai_drafts` 增加）。**不要**只看草稿数 —— `topic.generate` 写的是 `topic_suggestions` 而不是 `ai_drafts` |
+| **token 计量** | `agent_runs.tokens_used > 0`，且 `agent_events` 的 `message_end` 载荷里含 `usage` |
+| **失败路径** | 模型不可达的 Run 记为 `failed`（`errorType = model_error`），绑定的 Task 也是 `failed` —— 这条专门用来抓「失败被记成成功」 |
+| **崩溃清扫** | 卡死 Run 与其 Task 同为 `failed` |
 | 无 Pi 泄漏 | `grep -rn "@earendil-works/pi" src/app/` 无输出 |
 
 - [ ] **Step 3: 记录 P0 验收结果**
@@ -3173,7 +4236,11 @@ Run 最终状态: succeeded
 - 会话 ID / Run ID：
 - Run 最终状态：
 - 事件序列：
-- 草稿数变化：
+- 工具调用（stepIndex:tool:status）：
+- Run.tokensUsed / stepCount：
+- 业务表变化（topic_suggestions / ai_drafts）：
+- 失败路径 Run（errorType）：
+- 崩溃清扫结果（Run / Task）：
 - 实测用的模型（provider / modelName）：
 - 发现的问题：
 ```
@@ -3184,13 +4251,13 @@ Run 最终状态: succeeded
 npx vitest run && npx tsc --noEmit
 ```
 
-Expected: 全部测试通过（原 90 个 + 新增约 47 个），无类型错误。
+Expected: 全部测试通过、无类型错误。**不要预测用例数** —— 以实际输出为准。
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add src/scripts/agent-smoke.ts docs/
-git commit -m "test(agent): 新增 P0 端到端验收脚本并记录验收结果"
+git commit -m "test(agent): 新增 P0 端到端验收脚本（含失败路径与崩溃清扫断言）并记录验收结果"
 ```
 
 ---
@@ -3218,6 +4285,8 @@ P0 全部完成后应满足：
 | §7.6 | 同会话并发用 `followUp()` 排队 | P0 的验收脚本是"一会话一 Run"，未触发并发场景 | P0 可正常验收；P1 接前端时必须有 |
 | §8.3 | `CustomAgentMessages` 声明合并（工件/通知消息类型）| Task 7 已写入 `types.ts`，但 P0 的工件走 `AgentEvent(type="artifact")` 而非自定义消息 | 两条路径都可用；P1 决定统一用哪条 |
 | §7.4 | `AGENT_RUN_TIMEOUT_MS` 之外，`maxSteps` / `tokenBudget` 的实际**强制**（P0 只落库了阈值，未在循环中硬性拦截）| Pi 的 `finishTurn` 钩子是拦截点，实现需额外验证 | **P0 有超时与连续失败两道硬拦，步数/预算仅记录不拦截** —— 长任务可能超出预期成本 |
+| §6/§8.2 | 多轮上下文的**无损**还原：`agent_messages` 只存纯文本 content，未存 assistant 的 `toolCalls` | 孤立的 toolResult（无配对 toolCall）会被 provider 拒绝，Task 10 只能丢弃 `role="tool"` 的历史行 | 多轮能续上，但模型看不到「上一轮调过哪些工具」；要在落库时写入 `toolCalls`/`toolCallId` 才能还原 |
+| §9.3 | 工具调用审计的**全覆盖**：参数校验失败、`length` 截断导致的失败调用不进 `agent_tool_calls` | Pi 在这两种情况下不走任何钩子，只在 `tool_execution_end` 事件里出现 | P0 的 `agent_tool_calls` 只覆盖「正常执行」与「护栏阻断」两类；审计缺口需在 P1 由事件回填 |
 
 最后一项需要你在 P0 验收后确认是否可接受：P0 阶段步数与 token 只记录不拦截，若模型陷入循环，靠 10 分钟墙钟超时兜底。
 
