@@ -78,4 +78,22 @@ describe("SKILL_CATALOG（技能目录）", () => {
     expect(findSkillDefinition("schedule_recommend")?.artifact).toBeUndefined();
     expect(findSkillDefinition("script_generate")?.artifact).toBeUndefined();
   });
+
+  it("每个技能都有 summarize，且对正常产出返回非空摘要", () => {
+    for (const item of SKILL_CATALOG) {
+      expect(typeof item.summarize, `${item.skillKey}.summarize`).toBe("function");
+    }
+    const samples: Record<string, Record<string, unknown>> = {
+      hot_refresh: { collected: 3 },
+      topic_generate: { suggestion_ids: [1] },
+      content_note_pack: { draft_id: 1, titles: ["t"] },
+      review_submit: { review_id: 1, gate_status: "passed" },
+      script_generate: { script: "脚本" },
+      schedule_recommend: { slots: [{}] },
+    };
+    for (const item of SKILL_CATALOG) {
+      const summary = item.summarize(samples[item.skillKey] ?? {});
+      expect(summary.length, `${item.skillKey} 的摘要不能为空`).toBeGreaterThan(0);
+    }
+  });
 });

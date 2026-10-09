@@ -20,6 +20,7 @@ import {
   persistToolCall as persistToolCallInDb,
 } from "./persist.ts";
 import { SKILL_CATALOG } from "./skill-catalog.ts";
+import { buildToolCallSummary } from "./tool-summary.ts";
 
 /** 默认字符预算（约 100k token，按「字符数 / 2」估算） */
 const DEFAULT_CHAR_BUDGET = 200_000;
@@ -32,6 +33,9 @@ const DEFAULT_RUN_TIMEOUT_MS = 600_000;
 
 /** 工具结果摘要保留的列表条数 */
 const SUMMARY_LIST_LIMIT = 10;
+
+/** guard 未给 reason 时的兜底文案（理论上不会发生：阻断分支一定有 reason） */
+const BLOCKED_REASON_FALLBACK = "被护栏阻断";
 
 /** 本地中止原因：循环自己知道是谁按下的中止，必须显式记录 */
 type AbortReason = "timeout" | "tool_failures";
@@ -308,6 +312,13 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             result: null,
             status: "blocked",
             errorType: "guard_blocked",
+            // 被阻断的调用不走 afterToolCall，摘要只能在这里算（结果为空、原因来自 guard）
+            summary: buildToolCallSummary({
+              toolName: context.toolCall.name,
+              details: {},
+              isError: false,
+              blockedReason: verdict.reason ?? BLOCKED_REASON_FALLBACK,
+            }),
           });
         } catch (error) {
           await notePersistFailure("beforeToolCall/blocked", error);
@@ -339,6 +350,8 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
       const details = asRecord(context.result.details);
       const isError = context.isError;
       const durationMs = entry ? Date.now() - entry.startedAt : null;
+      // 摘要与结果同一次写入：落库时是唯一同时握有「工具 + 结果」的时刻（D21）
+      const summary = buildToolCallSummary({ toolName: context.toolCall.name, details, isError });
 
       // 1) 工具调用落库（正常执行路径）
       try {
@@ -349,6 +362,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             status: isError ? "failed" : "succeeded",
             errorType: isError ? "tool_error" : null,
             durationMs,
+            summary,
           });
         } else {
           await persistToolCallRow({
@@ -361,6 +375,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             status: isError ? "failed" : "succeeded",
             errorType: isError ? "tool_error" : null,
             durationMs,
+            summary,
           });
         }
       } catch (error) {

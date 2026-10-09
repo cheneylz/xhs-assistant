@@ -50,6 +50,22 @@ export interface SkillDefinition {
   riskLevel: SkillRiskLevel;
   /** 产出物声明，驱动工件面板 */
   artifact?: ArtifactSpec;
+  /**
+   * 工具卡摘要：把产出浓缩成一行给用户「一眼看懂」（D21）。
+   * **必填** —— 选 D21 的既定成本就是每个工具都要写一份（P1 设计稿 §6.5）。
+   * 服务端算好写进 agent_tool_calls.summary，前端不 import 本文件。
+   */
+  summarize: (details: Record<string, unknown>) => string;
+}
+
+/**
+ * 摘要里安全读取「条数」：数组取长度，其余尝试转数字，失败归零。
+ * details 的类型是 unknown（工具返回值），不能直接当 number 用。
+ */
+export function summarizeCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export const SKILL_CATALOG: SkillDefinition[] = [
@@ -76,6 +92,7 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
 返回本次采集收录的话题数量（collected）。`,
     // 注意：热点采集会写库（hotTopic.createMany + deleteMany 清上一批），故为 write 而非 read
     riskLevel: "write",
+    summarize: (details) => `收录 ${summarizeCount(details.collected)} 条热点`,
   },
   {
     skillKey: "topic_generate",
@@ -106,6 +123,7 @@ description: 基于账号知识库、实时热点与爆款拆解结构，生成�
       titleField: "titles",
       hrefPrefix: "/platforms/xhs/planner?id=",
     },
+    summarize: (details) => `生成 ${summarizeCount(details.suggestion_ids)} 个选题`,
   },
   {
     skillKey: "content_note_pack",
@@ -135,6 +153,11 @@ description: 围绕选题生成标题备选、正文、话题标签与行动引�
       titleField: "titles",
       hrefPrefix: "/platforms/xhs/drafts?id=",
     },
+    summarize: (details) => {
+      const titles = Array.isArray(details.titles) ? details.titles : [];
+      const first = titles.length ? `：《${String(titles[0])}》` : "";
+      return `已保存草稿 #${summarizeCount(details.draft_id)}${first}`;
+    },
   },
   {
     skillKey: "review_submit",
@@ -163,6 +186,8 @@ description: 对草稿执行合规规则检测与三道门禁审校
       idField: "review_id",
       hrefPrefix: "/platforms/xhs/review?id=",
     },
+    summarize: (details) =>
+      `审校工单 #${summarizeCount(details.review_id)}，门禁 ${String(details.gate_status ?? "未知")}`,
   },
   {
     skillKey: "script_generate",
@@ -187,6 +212,7 @@ description: 将图文草稿转化为 30-60 秒口播分镜脚本
 返回分镜脚本文本（script）。`,
     // generateVideoScript 无任何 prisma 调用（只读草稿 + 调 LLM），故为 read 而非 write
     riskLevel: "read",
+    summarize: (details) => `生成脚本 ${String(details.script ?? "").length} 字`,
   },
   {
     skillKey: "schedule_recommend",
@@ -211,6 +237,7 @@ description: 基于历史发布数据与平台活跃规律，推荐未来 3 天�
 返回推荐时间槽位（slots）与推荐理由（reason）。`,
     // recommendSchedules 仅 findFirst/findMany，无写入，故为 read
     riskLevel: "read",
+    summarize: (details) => `推荐 ${summarizeCount(details.slots)} 个发布时段`,
   },
 ];
 

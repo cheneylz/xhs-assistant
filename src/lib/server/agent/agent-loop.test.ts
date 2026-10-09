@@ -337,6 +337,31 @@ describe("runAgentLoop（循环编排）", () => {
     expect(result.status).toBe("succeeded");
   });
 
+  it("工具调用落库时带上摘要（D21）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 87 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "hot_refresh", {}),
+        assistantText("热点已刷新"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.finalized).toHaveLength(1);
+    expect(fake.finalized[0]?.summary).toBe("收录 87 条热点");
+  });
+
+  it("阻断路径的摘要用 guard 的 reason（该路径不写 finalized）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("not_exist", {})],
+      fakeStreamFn: createScriptedStreamFn([assistantToolCall("call-1", "not_exist", {}), assistantText("放弃")]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.finalized).toHaveLength(0);
+    expect(fake.started[0]?.summary).toContain("未在技能目录中注册");
+  });
+
   it("多轮：第二次运行能读到第一次的消息，孤立的 tool 历史被丢弃", async () => {
     const history: StoredMessage[] = [
       { role: "user", content: "第一轮的提问", toolCallId: null },

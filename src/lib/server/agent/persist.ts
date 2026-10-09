@@ -149,6 +149,8 @@ export async function persistToolCall(options: {
   status: "running" | "succeeded" | "failed" | "blocked";
   errorType?: string | null;
   durationMs?: number | null;
+  /** 工具卡摘要（D21）。阻断路径在 beforeToolCall 就已知原因，一并写入 */
+  summary?: string | null;
 }): Promise<number> {
   const created = await prisma.agentToolCall.create({
     data: {
@@ -161,6 +163,7 @@ export async function persistToolCall(options: {
       status: options.status,
       errorType: options.errorType ?? null,
       durationMs: options.durationMs ?? null,
+      summary: options.summary ?? null,
       createdAt: shanghaiNow(),
     },
   });
@@ -174,6 +177,7 @@ export async function finalizeToolCall(options: {
   status: "succeeded" | "failed";
   errorType?: string | null;
   durationMs?: number | null;
+  summary?: string | null;
 }): Promise<void> {
   await prisma.agentToolCall.update({
     where: { id: options.id },
@@ -186,6 +190,8 @@ export async function finalizeToolCall(options: {
       status: options.status,
       errorType: options.errorType ?? null,
       durationMs: options.durationMs ?? null,
+      // summary 与 result 同类：本次没算就不动这一列
+      summary: options.summary ?? undefined,
     },
   });
 }
