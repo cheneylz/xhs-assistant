@@ -34,7 +34,14 @@ Pi 包的 `exports` 映射**只声明 `types` + `import` 条件，无 `require`�
 
 `package.json` 的 worker 脚本改为：`"worker": "tsx src/worker/index.mts"`
 
-**⚠️ 待验证（Task 0 遗留）**：`.mts` 入口 import 无 Pi 依赖的 `.ts` 模块（ESM → CJS 互操作），以及 vitest 能否跑 import `.mts` 的测试。Task 1 之前必须先验证这两点，否则任务 7/10/11 会连环卡住。
+**✅ 已解决（Task 4 期间发现并修复）**：`.mts` 方案有两处必须配套的 tsconfig 变更，缺一不可，已在提交 `9624f32` 落地：
+
+1. **`include` 增加 `"**/*.mts"`** —— 原 `include` 是 `["**/*.ts", "**/*.tsx"]`，**不含 `.mts`**，导致全部 5 个 `.mts` 文件（恰好是 Pi 集成、风险最高的部分）**完全逃过 `tsc` 检查**。这是比"加载失败"更隐蔽的问题：代码能跑，但没有任何类型保障。
+2. **开启 `"allowImportingTsExtensions": true`** —— 因为 Pi 包 ESM-only，tsx/Node ESM **不做扩展名推断**，导入必须显式写 `.mts` 后缀；不加此选项 `tsc` 会报 `TS5097`。项目已设 `noEmit: true`，加此选项安全。
+
+**验证方式（后续任务沿用）**：往任一 `.mts` 文件注入一个类型错误，确认 `tsc --noEmit` 能报出来 —— 这证明检查真的覆盖到了 `.mts`，而不是静默放过。
+
+**因此后续任务写 `.mts` 文件时**：导入必须显式带后缀（`./foo.mts`），且**不要**用 `@ts-ignore` 绕过 `TS5097`（已全局开启，无需绕过）。
 
 ### 其余实测修正
 
