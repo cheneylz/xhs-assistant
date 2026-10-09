@@ -62,8 +62,11 @@ export function encodeSseFrame(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
-/** 把 Prisma 的 Json 载荷收窄成普通对象（可能是 null / 数组 / 标量） */
-function toPayloadRecord(payload: unknown): Record<string, unknown> {
+/**
+ * 把 Prisma 的 Json 载荷收窄成普通对象（可能是 null / 数组 / 标量）。
+ * 导出给 API 序列化层共用（src/app/api/agent/shared.ts），避免第三份窄化逻辑。
+ */
+export function toPayloadRecord(payload: unknown): Record<string, unknown> {
   return payload !== null && typeof payload === "object" && !Array.isArray(payload)
     ? (payload as Record<string, unknown>)
     : {};
