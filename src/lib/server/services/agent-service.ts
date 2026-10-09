@@ -4,8 +4,9 @@
  * 会话 / 消息 / Run 的持久化操作，以及 worker 侧的原子任务领取。
  * 【本文件不含 Pi 依赖】—— 可被 Next.js API 路由与 worker 两侧安全 import。
  */
-import type { AgentConversation, AgentRun, Prisma } from "@prisma/client";
+import type { AgentConversation, AgentEvent, AgentMessage, AgentRun, AgentToolCall, Prisma } from "@prisma/client";
 import { prisma } from "../core/db";
+import { notFound } from "../core/http-error";
 import { shanghaiNow } from "../core/time";
 
 /** 会话标题最大长度 */
@@ -287,4 +288,176 @@ export async function listMessages(
     content: message.content,
     toolCallId: message.toolCallId,
   }));
+}
+
+// ---------- P1-A：接口层查询 ----------
+
+/** 校验会话归属：不存在或不属于该用户一律 404（不泄露「存在但不是你的」） */
+export async function findConversationForUser(conversationId: number, userId: number): Promise<AgentConversation> {
+  const conversation = await prisma.agentConversation.findFirst({ where: { id: conversationId, userId } });
+  if (!conversation) throw notFound("会话不存在");
+  return conversation;
+}
+
+/**
+ * 会话的全部 Run（按 id 升序）。
+ * 事件范围一律由它圈定 —— SSE、首屏、工件接口三处共用，避免各写一份查询条件。
+ */
+export async function listRuns(conversationId: number): Promise<AgentRun[]> {
+  return prisma.agentRun.findMany({ where: { conversationId }, orderBy: { id: "asc" } });
+}
+
+/** 会话内是否还有未结束的 Run（SSE 降速判定的输入） */
+export async function hasActiveRun(conversationId: number): Promise<boolean> {
+  const count = await prisma.agentRun.count({
+    where: { conversationId, status: { in: ["pending", "running"] } },
+  });
+  return count > 0;
+}
+
+/**
+ * 会话的**用户消息**（按 id 升序，中栏历史的 user 气泡）。
+ *
+ * 只取 role="user"，不是漏了别的角色：助手文本一律来自 agent_events 的 message_end
+ * （首屏 `events` 字段与 SSE 同源）。最终答复同时存在于两处 ——
+ * agent_messages 的 assistant 行（供 LLM 多轮上下文）与 message_end 事件 ——
+ * 若这里把 assistant 行也返回，同一段文本会被渲染两遍。
+ */
+export async function listConversationUserMessages(conversationId: number, limit = 500): Promise<AgentMessage[]> {
+  return prisma.agentMessage.findMany({
+    where: { conversationId, role: "user" },
+    orderBy: { id: "asc" },
+    take: limit,
+  });
+}
+
+/** 多个 Run 的工具调用（按 id 升序，中栏已完成的工具卡） */
+export async function listToolCallsForRuns(runIds: number[]): Promise<AgentToolCall[]> {
+  if (runIds.length === 0) return [];
+  return prisma.agentToolCall.findMany({ where: { runId: { in: runIds } }, orderBy: { id: "asc" } });
+}
+
+/** 多个 Run 的工件事件（按 id 升序，右栏工件） */
+export async function listArtifactEvents(runIds: number[]): Promise<AgentEvent[]> {
+  if (runIds.length === 0) return [];
+  return prisma.agentEvent.findMany({
+    where: { runId: { in: runIds }, type: "artifact" },
+    orderBy: { id: "asc" },
+  });
+}
+
+/** 会话全部 Run 的事件 id 上界（无事件为 0）—— 前端 SSE 的续传起点 */
+export async function latestEventIdForRuns(runIds: number[]): Promise<number> {
+  if (runIds.length === 0) return 0;
+  const result = await prisma.agentEvent.aggregate({ where: { runId: { in: runIds } }, _max: { id: true } });
+  return result._max.id ?? 0;
+}
+
+/**
+ * 首屏回放用的历史事件（id ≤ upToId、仅可渲染类型）。
+ *
+ * 取的是**最新**的 limit 条再翻正序：截断时丢掉的是最早的几条，
+ * 而不是把最近的过程文本丢掉（长会话下后者会让用户看不到刚发生的事）。
+ */
+export async function listRenderableEvents(
+  runIds: number[],
+  upToId: number,
+  types: readonly string[],
+  limit: number,
+): Promise<AgentEvent[]> {
+  if (runIds.length === 0 || upToId <= 0) return [];
+  const rows = await prisma.agentEvent.findMany({
+    where: { runId: { in: runIds }, id: { lte: upToId }, type: { in: [...types] } },
+    orderBy: { id: "desc" },
+    take: limit,
+  });
+  return rows.reverse();
+}
+
+/** SSE：取 id > afterId 的新事件（升序，最多 limit 条） */
+export async function listEventsAfter(runIds: number[], afterId: number, limit: number): Promise<AgentEvent[]> {
+  if (runIds.length === 0) return [];
+  return prisma.agentEvent.findMany({
+    where: { runId: { in: runIds }, id: { gt: afterId } },
+    orderBy: { id: "asc" },
+    take: limit,
+  });
+}
+
+/** 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用，key 是 toolCallId） */
+export async function findToolCallSummaries(toolCallIds: string[]): Promise<Map<string, string>> {
+  if (toolCallIds.length === 0) return new Map();
+  const rows = await prisma.agentToolCall.findMany({
+    where: { toolCallId: { in: toolCallIds }, summary: { not: null } },
+    select: { toolCallId: true, summary: true },
+  });
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.summary) map.set(row.toolCallId, row.summary);
+  }
+  return map;
+}
+
+// ---------- P1-A：取消与删除 ----------
+
+/** 取消 Run 的结果：冲突时带上给用户看的原因（路由把它转成 409） */
+export type CancelRunResult = { outcome: "cancelled"; run: AgentRun } | { outcome: "conflict"; reason: string };
+
+/**
+ * 取消一个 Run —— **仅 pending**（P1 设计稿 D19）。
+ *
+ * 竞态处理：worker 的 claimPendingRuns 是 `FOR UPDATE SKIP LOCKED` + `status='pending'`，
+ * 这里用 `updateMany` 带上同样的 status 条件做原子守卫 —— 若「读到 pending、写时已被领取」，
+ * count 为 0，返回冲突而不是把 running 的 Run 标成 cancelled。
+ */
+export async function cancelPendingRun(runId: number, userId: number): Promise<CancelRunResult> {
+  const run = await prisma.agentRun.findFirst({ where: { id: runId, userId } });
+  if (!run) throw notFound("Run 不存在");
+  if (isRunTerminal(run.status)) {
+    return { outcome: "conflict", reason: `Run 已是终态（${run.status}），无需取消` };
+  }
+
+  const now = shanghaiNow();
+  const updated = await prisma.agentRun.updateMany({
+    where: { id: runId, status: "pending" },
+    data: { status: "cancelled", errorType: "cancelled_by_user", finishedAt: now },
+  });
+  if (updated.count === 0) {
+    return { outcome: "conflict", reason: "Run 已被 worker 领取并开始执行，P1 不支持中止运行中的任务" };
+  }
+
+  // 同步 Task：任务中心里这条 Agent 任务不能永远停在 pending（与 finishRun 同一约定）
+  await prisma.task.update({
+    where: { id: run.taskId },
+    data: { status: "failed", progress: 0, finishedAt: now },
+  });
+
+  // 会话必须回到 idle：否则前端会一直停在「执行中」（输入框禁用、发不出下一条）
+  if (!(await hasActiveRun(run.conversationId))) {
+    await updateConversationStatus({ conversationId: run.conversationId, status: "idle" });
+  }
+
+  return { outcome: "cancelled", run: await prisma.agentRun.findUniqueOrThrow({ where: { id: runId } }) };
+}
+
+/**
+ * 删除会话及其全部关联行。
+ *
+ * Prisma 的级联**只覆盖声明了关系的表**（agent_messages / agent_runs）。
+ * agent_events / agent_tool_calls / tasks 与 Run 之间只有裸整数外键、没有关系声明，
+ * 不显式删就会留下孤儿行 —— 事件与工具调用的孤儿尤其难查（它们没有可关联的会话）。
+ */
+export async function deleteConversationDeep(conversationId: number, userId: number): Promise<void> {
+  await findConversationForUser(conversationId, userId);
+  const runs = await prisma.agentRun.findMany({ where: { conversationId }, select: { id: true, taskId: true } });
+  const runIds = runs.map((run) => run.id);
+  const taskIds = runs.map((run) => run.taskId);
+
+  await prisma.$transaction([
+    prisma.agentEvent.deleteMany({ where: { runId: { in: runIds } } }),
+    prisma.agentToolCall.deleteMany({ where: { runId: { in: runIds } } }),
+    prisma.task.deleteMany({ where: { id: { in: taskIds } } }),
+    // 放在最后：agent_messages / agent_runs 由外键 onDelete: Cascade 随会话一起清
+    prisma.agentConversation.delete({ where: { id: conversationId } }),
+  ]);
 }
