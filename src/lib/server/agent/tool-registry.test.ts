@@ -15,7 +15,7 @@ vi.mock("./skill-catalog", async (importOriginal) => {
   return { ...actual, executeSkill: executeSkillMock };
 });
 
-import { buildAgentTools, findAgentTool } from "./tool-registry.mts";
+import { buildAgentTools } from "./tool-registry.mts";
 import type { SkillContext } from "./skill-catalog";
 
 const context: SkillContext = {
@@ -104,12 +104,5 @@ describe("buildAgentTools（技能 → AgentTool）", () => {
     await expect(tools.find((tool) => tool.name === "content.notePack")!.execute("call-1", { topic: "露营" })).rejects.toThrow(
       "未配置文本模型，无法生成文案包",
     );
-  });
-});
-
-describe("findAgentTool（单技能查询）", () => {
-  it("命中目录内技能时返回其工具，未知技能返回 undefined", () => {
-    expect(findAgentTool("topic.generate")?.label).toBe("选题生成");
-    expect(findAgentTool("not.exist")).toBeUndefined();
   });
 });

@@ -21,11 +21,12 @@ export function serializeEventForDb(event: Record<string, unknown>): SerializedE
   const type = String(event.type ?? "unknown");
 
   if (TRIMMED_EVENT_TYPES.has(type)) {
-    const message = event.message as { role?: string } | undefined;
-    return {
-      type,
-      payload: { role: message?.role ?? "assistant", trimmed: true },
-    };
+    const message = event.message as { role?: string; usage?: unknown } | undefined;
+    const payload: Record<string, unknown> = { role: message?.role ?? "assistant", trimmed: true };
+    // message_end 的 usage 是 P0 唯一的 token 基线（agent_runs.tokens_used 之外的明细来源），
+    // 体积很小，必须保留；整条 message 的其余部分仍然剔除。
+    if (type === "message_end" && message?.usage !== undefined) payload.usage = message.usage;
+    return { type, payload: payload as Prisma.InputJsonValue };
   }
 
   const payload: Record<string, unknown> = {};
@@ -140,6 +141,10 @@ export async function finalizeToolCall(options: {
   await prisma.agentToolCall.update({
     where: { id: options.id },
     data: {
+      // 注意语义不对称（有意，不要「顺手统一」）：
+      //   result 传 null 表示「本次不动这一列」（?? undefined 会被 Prisma 忽略）
+      //   errorType / durationMs 传 null 表示「清空该列」（?? null 会真的写入 NULL）
+      // 调用方若要保留原有 result，传 null 即可，不必回读。
       result: (options.result ?? undefined) as Prisma.InputJsonValue | undefined,
       status: options.status,
       errorType: options.errorType ?? null,

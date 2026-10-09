@@ -7,7 +7,7 @@
  * 【本文件含 Pi 依赖】—— 仅 worker 侧使用，Next.js 侧禁止 import。
  */
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { executeSkill, findSkillDefinition, SKILL_CATALOG, type SkillContext } from "./skill-catalog";
+import { executeSkill, SKILL_CATALOG, type SkillContext } from "./skill-catalog";
 import { assertSchemasComplete, getToolSchema } from "./tool-schemas";
 
 /** 工具返回值中文本内容的长度上限（超出则截断，避免撑爆上下文） */
@@ -49,16 +49,4 @@ export function buildAgentTools(context: SkillContext): AgentTool[] {
       };
     },
   }));
-}
-
-/** 取单个技能的工具定义（供测试与调试） */
-export function findAgentTool(skillKey: string): AgentTool | undefined {
-  const definition = findSkillDefinition(skillKey);
-  if (!definition) return undefined;
-  return buildAgentTools({
-    userId: 0,
-    textClient: null as never,
-    modelConfig: null,
-    apiKey: "",
-  }).find((tool) => tool.name === skillKey);
 }

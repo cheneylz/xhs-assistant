@@ -29,6 +29,21 @@ describe("serializeEventForDb（事件序列化）", () => {
     const payload = serialized.payload as Record<string, unknown>;
     expect(JSON.stringify(payload).length).toBeLessThan(2000);
   });
+
+  it("message_end 保留 usage（token 基线的唯一来源），大字段仍剔除", () => {
+    const serialized = serializeEventForDb({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "A".repeat(5000) }],
+        usage: { input: 100, output: 20, totalTokens: 120 },
+      },
+    });
+    const payload = serialized.payload as Record<string, unknown>;
+    expect(payload.trimmed).toBe(true);
+    expect(payload.usage).toEqual({ input: 100, output: 20, totalTokens: 120 });
+    expect(JSON.stringify(payload).length).toBeLessThan(2000);
+  });
 });
 
 describe("extractArtifacts（工件抽取）", () => {

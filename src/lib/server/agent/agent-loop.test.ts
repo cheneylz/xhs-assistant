@@ -1,0 +1,377 @@
+/**
+ * Agent 循环集成测试（离线）
+ *
+ * 关键：注入假 streamFn 与假落库函数 —— 不调真实 LLM、不连数据库、不烧 token。
+ * 覆盖「思考 → 调工具 → 看结果 → 收尾」全流程，以及两条必须失败的路径与多轮历史。
+ */
+import { describe, expect, it, vi } from "vitest";
+import { Type } from "typebox";
+import {
+  buildToolCatalogText,
+  resolveLoopOutcome,
+  runAgentLoop,
+  type FinalizeToolCallFn,
+  type PersistToolCallFn,
+  type RunAgentLoopOptions,
+  type StoredMessage,
+} from "./agent-loop.mts";
+
+/** 空 usage，只为满足 AssistantMessage 形状 */
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** 造一条助手文本消息 */
+function assistantText(text: string, stopReason = "stop") {
+  return {
+    role: "assistant",
+    content: text ? [{ type: "text", text }] : [],
+    api: "openai-completions",
+    provider: "openai-compatible",
+    model: "fake-model",
+    usage: { ...EMPTY_USAGE, totalTokens: 10 },
+    stopReason,
+    timestamp: 0,
+  } as Record<string, unknown>;
+}
+
+/** 造一条「要调工具」的助手消息 */
+function assistantToolCall(toolCallId: string, toolName: string, args: Record<string, unknown>) {
+  return {
+    ...assistantText(""),
+    content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: args }],
+    stopReason: "toolUse",
+  };
+}
+
+/**
+ * 把一条最终助手消息包装成 pi 期望的 AssistantMessageEventStream。
+ * 只发 done：循环从 result() 取最终消息，中间增量事件只用于渲染。
+ */
+function createFakeStream(message: Record<string, unknown>) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield { type: "done" };
+    },
+    result: async () => message,
+  };
+}
+
+/** 按脚本依次返回助手消息的假 streamFn；脚本用完后返回空 stop 消息以结束循环 */
+function createScriptedStreamFn(script: Array<Record<string, unknown>>) {
+  let turn = 0;
+  return (() => {
+    const message = script[turn] ?? assistantText("");
+    turn += 1;
+    return createFakeStream(message);
+  }) as never;
+}
+
+/** 记录「模型实际看到了什么」的假 streamFn */
+function createCapturingStreamFn(seen: Array<Record<string, unknown>>, reply: string) {
+  let turn = 0;
+  return ((_model: unknown, context: { messages?: Array<Record<string, unknown>> }) => {
+    seen.push(...(context?.messages ?? []));
+    turn += 1;
+    return createFakeStream(assistantText(turn === 1 ? reply : ""));
+  }) as never;
+}
+
+/**
+ * 构造一个「不返回」的假 streamFn：只在收到中止信号后结束，并把 stopReason 置为 aborted
+ * —— 与真实 streamSimple 被中止时的行为一致。
+ */
+function createHangingStreamFn() {
+  return ((_model: unknown, _context: unknown, streamOptions?: { signal?: AbortSignal }) => {
+    const signal = streamOptions?.signal;
+    return {
+      async *[Symbol.asyncIterator]() {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        // 一个事件都不发：循环会走「流结束但无事件」的兜底路径，取 result() 作为最终消息
+      },
+      result: async () => assistantText("", "aborted"),
+    };
+  }) as never;
+}
+
+/** 不碰数据库、不碰网络的假工具 */
+function createFakeTool(
+  name: string,
+  output: Record<string, unknown>,
+  parameters: ReturnType<typeof Type.Object> = Type.Object({}),
+) {
+  return {
+    name,
+    label: name,
+    description: "假工具（测试用）",
+    parameters,
+    replay: "never",
+    execute: async () => ({
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      details: output,
+    }),
+  } as never;
+}
+
+/** 假落库实现：把每次调用记进数组，便于断言 */
+function createFakePersisters() {
+  const events: Array<Record<string, unknown>> = [];
+  const messages: Array<{ role: string; content: string }> = [];
+  const started: Array<Parameters<PersistToolCallFn>[0]> = [];
+  const finalized: Array<Parameters<FinalizeToolCallFn>[0]> = [];
+  return {
+    events,
+    messages,
+    started,
+    finalized,
+    persistEvent: vi.fn(async (_runId: number, event: Record<string, unknown>): Promise<string> => {
+      events.push(event);
+      return String(events.length);
+    }),
+    persistMessage: vi.fn(async (message: { role: string; content: string }): Promise<void> => {
+      messages.push(message);
+    }),
+    persistToolCall: vi.fn(async (options: Parameters<PersistToolCallFn>[0]): Promise<number> => {
+      started.push(options);
+      return started.length;
+    }),
+    finalizeToolCall: vi.fn(async (options: Parameters<FinalizeToolCallFn>[0]): Promise<void> => {
+      finalized.push(options);
+    }),
+  };
+}
+
+/** 最小参数集 */
+function baseOptions(overrides: Partial<RunAgentLoopOptions> = {}) {
+  const fake = createFakePersisters();
+  const options: RunAgentLoopOptions = {
+    runId: 1,
+    conversationId: 1,
+    userId: 1,
+    userMessage: "你好",
+    // 只用到 api / provider / id / contextWindow 四个字段
+    model: {
+      id: "fake-model",
+      api: "openai-completions",
+      provider: "openai-compatible",
+      contextWindow: 128_000,
+    } as never,
+    tools: [],
+    systemPrompt: "系统提示",
+    persistEvent: fake.persistEvent,
+    persistMessage: fake.persistMessage,
+    persistToolCall: fake.persistToolCall,
+    finalizeToolCall: fake.finalizeToolCall,
+    ...overrides,
+  };
+  return { fake, options };
+}
+
+describe("buildToolCatalogText（工具目录文本）", () => {
+  it("列出全部 6 个技能的 skillKey 与描述", () => {
+    const text = buildToolCatalogText();
+    expect(text).toContain("topic.generate");
+    expect(text).toContain("content.notePack");
+    expect(text).toContain("选题生成");
+  });
+});
+
+describe("resolveLoopOutcome（终态映射）", () => {
+  it("stopReason 为 stop 时记为 succeeded", () => {
+    expect(resolveLoopOutcome({ stopReason: "stop" }).status).toBe("succeeded");
+  });
+
+  it("stopReason 为 error 时记为 failed（Key 无效 / 限流 / provider 5xx 都走这条）", () => {
+    const outcome = resolveLoopOutcome({ stopReason: "error", errorMessage: "invalid api key" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("model_error");
+  });
+
+  it("stopReason 为 length 时记为 failed", () => {
+    expect(resolveLoopOutcome({ stopReason: "length" }).status).toBe("failed");
+  });
+
+  it("无本地中止原因时 aborted 记为 cancelled（外部中止）", () => {
+    expect(resolveLoopOutcome({ stopReason: "aborted" }).status).toBe("cancelled");
+  });
+
+  it("本地中止原因优先：超时 → failed(timeout)", () => {
+    const outcome = resolveLoopOutcome({ abortReason: "timeout", stopReason: "aborted" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("timeout");
+  });
+
+  it("本地中止原因优先：连续工具失败 → failed(tool_failures)", () => {
+    const outcome = resolveLoopOutcome({ abortReason: "tool_failures", stopReason: "aborted" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.errorType).toBe("tool_failures");
+  });
+
+  it("stopReason 缺失或未知时 fail-closed 记为 failed（绝不能默认 succeeded）", () => {
+    expect(resolveLoopOutcome({}).status).toBe("failed");
+    expect(resolveLoopOutcome({ stopReason: "whatever" }).status).toBe("failed");
+  });
+});
+
+describe("runAgentLoop（循环编排）", () => {
+  it("事件按顺序落库，agent_start 在最前、agent_end 在最后", async () => {
+    const { fake, options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("你好，我是运营助手。")]) });
+    await runAgentLoop(options);
+
+    const types = fake.events.map((event) => String(event.type));
+    expect(types[0]).toBe("agent_start");
+    expect(types[types.length - 1]).toBe("agent_end");
+  });
+
+  it("模型不调用工具时直接收尾：产出助手消息、记为 succeeded，且 token 有计量", async () => {
+    const { fake, options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("你好，我是运营助手。")]) });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("succeeded");
+    expect(result.stepCount).toBe(0);
+    // 假消息的 usage.totalTokens 为 10 —— 证明 usage 被累计（C5）
+    expect(result.tokensUsed).toBe(10);
+    expect(fake.messages.some((message) => message.role === "assistant")).toBe(true);
+  });
+
+  it("模型返回 stopReason=error 时记为 failed，而不是 succeeded", async () => {
+    const { options } = baseOptions({ fakeStreamFn: createScriptedStreamFn([assistantText("", "error")]) });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("model_error");
+  });
+
+  it("墙钟超时中止后记为 failed(timeout)", async () => {
+    const { options } = baseOptions({ fakeStreamFn: createHangingStreamFn(), runTimeoutMs: 30 });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("timeout");
+  });
+
+  it("工具调用落库为 running → succeeded，并按 stepIndex 记录", async () => {
+    const items = Array.from({ length: 3 }, (_, i) => i + 1);
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("topic.generate", { suggestion_ids: items, titles: ["A", "B", "C"] }, Type.Object({ count: Type.Optional(Type.Number()) }))],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "topic.generate", { count: 3 }),
+        assistantText("已完成"),
+      ]),
+    });
+    const result = await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ stepIndex: 0, toolName: "topic.generate", status: "running", params: { count: 3 } });
+    expect(fake.finalized).toHaveLength(1);
+    expect(fake.finalized[0]).toMatchObject({ id: 1, status: "succeeded" });
+    expect(result.stepCount).toBe(1);
+    // 3 个选题 → 3 条工件事件
+    expect(fake.events.filter((event) => event.type === "artifact")).toHaveLength(3);
+  });
+
+  it("结果摘要只改模型可见的 content，details 保持完整（多数组键同时截断）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [
+        createFakeTool("topic.generate", {
+          suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
+          titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),
+          count: 20,
+        }),
+      ],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "topic.generate", {}),
+        assistantText("已完成"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    // 模型看到的是 toolResult 消息的 content —— 必须是摘要（截断 + 原始条数）
+    const toolResultEvent = fake.events.find(
+      (event) => event.type === "message_end" && (event.message as { role?: string })?.role === "toolResult",
+    );
+    const text = ((toolResultEvent?.message as { content?: Array<{ text?: string }> })?.content ?? [])
+      .map((block) => block.text ?? "")
+      .join("");
+    const summary = JSON.parse(text) as {
+      truncated?: boolean;
+      totals?: Record<string, number>;
+      suggestion_ids?: unknown[];
+      titles?: unknown[];
+    };
+    expect(summary.truncated).toBe(true);
+    expect(summary.totals).toEqual({ suggestion_ids: 20, titles: 20 });
+    // 两个数组必须同步截断，否则 id 与标题错位
+    expect(summary.suggestion_ids).toHaveLength(10);
+    expect(summary.titles).toHaveLength(10);
+    // details 未被摘要污染：工件抽取因此拿到的是完整产出
+    expect(fake.finalized[0]?.result).toMatchObject({ count: 20 });
+    expect(((fake.finalized[0]?.result as { titles?: unknown[] })?.titles ?? [])).toHaveLength(20);
+  });
+
+  it("护栏阻断的调用落一条 blocked 记录，且不中断整体流程", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("not.exist", {})],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "not.exist", {}),
+        assistantText("该工具不可用，已放弃"),
+      ]),
+    });
+    const result = await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ toolName: "not.exist", status: "blocked", errorType: "guard_blocked" });
+    // 阻断走的是 immediate 分支，不会进 afterToolCall
+    expect(fake.finalized).toHaveLength(0);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("多轮：第二次运行能读到第一次的消息，孤立的 tool 历史被丢弃", async () => {
+    const history: StoredMessage[] = [
+      { role: "user", content: "第一轮的提问", toolCallId: null },
+      { role: "assistant", content: "第一轮的回答", toolCallId: null },
+      { role: "tool", content: "上一轮的工具产出", toolCallId: "call-9" },
+    ];
+    const seen: Array<Record<string, unknown>> = [];
+    const { options } = baseOptions({
+      userMessage: "接着上一轮继续",
+      historyMessages: history,
+      fakeStreamFn: createCapturingStreamFn(seen, "好的"),
+    });
+    await runAgentLoop(options);
+
+    const text = JSON.stringify(seen);
+    expect(text).toContain("第一轮的提问");
+    expect(text).toContain("第一轮的回答");
+    expect(text).toContain("接着上一轮继续");
+    // 没有配对 toolCall 的 toolResult 会被 provider 拒绝，P0 直接丢弃
+    expect(text).not.toContain("上一轮的工具产出");
+  });
+
+  it("charBudget/2 不小于上下文窗口时直接失败，不发请求", async () => {
+    let called = 0;
+    const { options } = baseOptions({
+      charBudget: 300_000, // 300000 / 2 = 150000 > 128000
+      fakeStreamFn: (() => {
+        called += 1;
+        return createFakeStream(assistantText("不该被调用"));
+      }) as never,
+    });
+    const result = await runAgentLoop(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorType).toBe("char_budget_exceeds_context_window");
+    expect(called).toBe(0);
+  });
+});

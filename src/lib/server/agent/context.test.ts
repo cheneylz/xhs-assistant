@@ -62,6 +62,15 @@ describe("estimateChars（字符数估算）", () => {
   it("空消息返回 0 附近的小值", () => {
     expect(estimateChars(systemMsg(""))).toBeLessThan(10);
   });
+
+  it("toolCall 块的 arguments 也计入字符数", () => {
+    const withArgs = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c1", name: "x", arguments: { topic: "A".repeat(100) } }],
+      timestamp: 0,
+    } as never;
+    expect(estimateChars(withArgs)).toBeGreaterThan(100);
+  });
 });
 
 describe("pruneByCharBudget（按字符预算裁剪）", () => {
@@ -121,6 +130,12 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
     expect(result.some((m) => m.role === "assistant")).toBe(false);
   });
 
+  it("预算小于 system 时仍保留最新 user 消息（否则模型拿不到任何指令）", () => {
+    const messages = [systemMsg("S".repeat(5000)), userMsg("这是一定要保留的指令")];
+    const result = pruneByCharBudget(messages, 10);
+    expect(JSON.stringify(result)).toContain("这是一定要保留的指令");
+  });
+
   it("保留 assistant 工具调用时其 toolResult 也保留", () => {
     const messages = [
       systemMsg("系统"),
@@ -135,15 +150,22 @@ describe("pruneByCharBudget（按字符预算裁剪）", () => {
 describe("summarizeToolResult（工具结果摘要）", () => {
   it("列表超过上限时截断并保留总数", () => {
     const items = Array.from({ length: 50 }, (_, i) => ({ id: i, title: `笔记${i}` }));
-    const summary = summarizeToolResult({ items }) as { items: unknown[]; total: number; truncated: boolean };
+    const summary = summarizeToolResult({ items }) as {
+      items: unknown[];
+      totals: Record<string, number>;
+      truncated: boolean;
+    };
     expect(summary.items).toHaveLength(10);
-    expect(summary.total).toBe(50);
+    expect(summary.totals.items).toBe(50);
     expect(summary.truncated).toBe(true);
   });
 
   it("列表未超上限时不截断", () => {
-    const summary = summarizeToolResult({ items: [{ id: 1 }] }) as { total: number; truncated: boolean };
-    expect(summary.total).toBe(1);
+    const summary = summarizeToolResult({ items: [{ id: 1 }] }) as {
+      totals: Record<string, number>;
+      truncated: boolean;
+    };
+    expect(summary.totals.items).toBe(1);
     expect(summary.truncated).toBe(false);
   });
 
@@ -155,5 +177,25 @@ describe("summarizeToolResult（工具结果摘要）", () => {
     const items = Array.from({ length: 10 }, (_, i) => ({ id: i }));
     const summary = summarizeToolResult({ items }, 3) as { items: unknown[] };
     expect(summary.items).toHaveLength(3);
+  });
+
+  it("多个数组键同时截断，且各自给出原始条数（topic.generate 场景）", () => {
+    const summary = summarizeToolResult({
+      suggestion_ids: Array.from({ length: 20 }, (_, i) => i + 1),
+      titles: Array.from({ length: 20 }, (_, i) => `标题${i}`),
+      count: 20,
+    }) as {
+      suggestion_ids: unknown[];
+      titles: unknown[];
+      totals: Record<string, number>;
+      truncated: boolean;
+      count: number;
+    };
+    // 两个数组必须同步截断，否则 id 与标题会错位
+    expect(summary.suggestion_ids).toHaveLength(10);
+    expect(summary.titles).toHaveLength(10);
+    expect(summary.totals).toEqual({ suggestion_ids: 20, titles: 20 });
+    expect(summary.truncated).toBe(true);
+    expect(summary.count).toBe(20);
   });
 });
