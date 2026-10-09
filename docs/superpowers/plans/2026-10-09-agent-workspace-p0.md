@@ -1029,8 +1029,8 @@ Expected: FAIL —— `Failed to resolve import "./tool-schemas"`
  * 工具入参 schema（TypeBox）
  *
  * Pi Agent 用 TypeBox 做工具入参校验（AgentTool.parameters: TSchema）。
- * SKILL_CATALOG 里的 paramsSchema 是裸 JSON Schema，缺 TypeBox 的 [Kind] 符号，
- * 直接强转会导致校验静默失效，因此在此重建。
+ * SKILL_CATALOG 里的 paramsSchema 是无 required、无边界约束的展示元数据，
+ * 实测会静默放行非法参数（如缺必填 topic 返回 true），因此在此重建为严格 schema。
  *
  * 【本文件不含 Pi 依赖】—— typebox 是独立校验库。
  */
