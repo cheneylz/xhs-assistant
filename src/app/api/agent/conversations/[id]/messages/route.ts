@@ -42,8 +42,9 @@ export const POST = handle(async (req, { params }) => {
   }
 
   const message = await appendMessage({ conversationId, role: "user", content });
-  // 标题与「置 running」必须同一次写入落库（见 createRunForMessage 的注释）：
-  // 先建 Run 再补写标题，会让 worker 跑完后的 idle 被这次迟到写入盖回 running。
+  // Task + Run + 会话状态在 createRunForMessage 里同事务写入（原因见该函数注释）。
+  // 用户消息在事务之前单独落库：建 Run 失败会留下一条没有 Run 的消息，
+  // 用户重发即可 —— 比把消息写入卷进事务更简单，且不会让消息丢失。
   const title = conversation.title === DEFAULT_CONVERSATION_TITLE ? deriveConversationTitle(content) : undefined;
   const run = await createRunForMessage({ conversationId, userId: user.id, messageId: message.id, title });
 

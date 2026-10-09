@@ -1,6 +1,6 @@
 /**
  * SSE 事件工具单元测试
- * 覆盖：帧编码、可渲染事件判定、tool_execution_end 摘要补齐、toolCallId 收集
+ * 覆盖：帧编码、首屏回放集合、tool_execution_end 摘要补齐、toolCallId 收集
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -9,7 +9,6 @@ import {
   attachToolCallSummaries,
   collectToolCallIds,
   encodeSseFrame,
-  isRenderableEvent,
   toolCallSummaryKey,
 } from "./stream-events";
 
@@ -34,20 +33,9 @@ describe("encodeSseFrame（帧编码）", () => {
   });
 });
 
-describe("isRenderableEvent（首屏回放判定）", () => {
-  it("过程文本 / 状态 / 错误三类要回放；工件与工具卡各有专门来源，不回放", () => {
+describe("RENDERABLE_EVENT_TYPES（首屏回放集合）", () => {
+  it("只含 message_end / status / error：工件与工具卡各有专门来源，回放会渲染两遍", () => {
     expect(RENDERABLE_EVENT_TYPES).toEqual(["message_end", "status", "error"]);
-    for (const type of RENDERABLE_EVENT_TYPES) expect(isRenderableEvent(type)).toBe(true);
-    // artifact 由首屏的 artifacts 字段返回，回放会让工件卡渲染两遍
-    expect(isRenderableEvent("artifact")).toBe(false);
-  });
-
-  it("增量与工具执行事件不回放（工具卡由 agent_tool_calls 承担，回放会渲染两遍）", () => {
-    expect(isRenderableEvent("message_update")).toBe(false);
-    expect(isRenderableEvent("message_start")).toBe(false);
-    expect(isRenderableEvent("tool_execution_start")).toBe(false);
-    expect(isRenderableEvent("tool_execution_end")).toBe(false);
-    expect(isRenderableEvent("agent_end")).toBe(false);
   });
 });
 

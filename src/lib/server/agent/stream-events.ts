@@ -46,11 +46,6 @@ export const SSE_HEARTBEAT_MS = 15_000;
  */
 export const RENDERABLE_EVENT_TYPES = ["message_end", "status", "error"] as const;
 
-/** 该事件类型是否要回放给前端（首屏 events 字段用） */
-export function isRenderableEvent(type: string): boolean {
-  return (RENDERABLE_EVENT_TYPES as readonly string[]).includes(type);
-}
-
 /**
  * SSE 帧编码：`data: <json>\n\n`
  *
