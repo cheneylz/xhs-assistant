@@ -19,7 +19,27 @@ npx vitest run          # 期望 Test Files 20 passed / Tests 203 passed
 npx tsc --noEmit        # 期望无输出
 ```
 
+> **关于各 Task 里的用例数**：下面的期望值是编写计划时的快照。每完成一个任务都会新增用例，因此**执行时以「全绿」为准**；数字对不上先确认新测试是否被收集（vitest 只收 `src/**/*.test.ts`），不要当成回归。
+
 **本计划只覆盖 A 块**（设计稿 §十 的 D23 + A 块）。C 块（7 个新工具）与 B 块（前端）另有计划，见 `docs/superpowers/plans/`。
+
+### 执行进度
+
+| 任务 | 状态 | 提交 |
+|---|---|---|
+| Task 1 D23 保留过程文本 | ✅ 已验收 | `4f5c745` `6e8df02`（评审修正） |
+| Task 2 P0 端到端回归 | ✅ 通过（`P0 验收全部通过`） | — |
+| Task 3 `handle()` 加宽 | ✅ 已验收 | `8e3dd4f` |
+| Task 6 轮询间隔纯函数 | ✅ 已验收 | `8c2ed18` |
+| Task 7 SSE 事件工具 | ✅ 已验收 | `138e2c9` `4d4af98`（评审修正） |
+| Task 4/5 摘要列与工具摘要 | ⬜ 未开始 | |
+| Task 8/9 服务层与序列化 | ⬜ 未开始 | |
+| Task 10-12 接口 1/2/3/8/4 | ⬜ 未开始 | |
+| Task 13-15 接口 6/7 与 SSE | ⬜ 未开始 | |
+| Task 16 A 块端到端验收 | ⬜ 未开始 | |
+| Task 17 回归与交接文档 | ⬜ 未开始 | |
+
+**当前基线**：22 文件 / 220 用例全绿，`tsc --noEmit` 无输出。
 
 ---
 
@@ -1095,7 +1115,7 @@ export function attachToolCallSummaries<T extends AgentEventRowLike>(
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run src/lib/server/agent/stream-events.test.ts`
-Expected: PASS（8 个用例）
+Expected: PASS（9 个用例）
 
 - [ ] **Step 5: 提交**
 
@@ -1346,6 +1366,11 @@ git commit -m "feat(agent): 会话查询 / 取消 pending Run / 深删会话（�
 
 **为什么单独一个文件**：设计稿 §4.4 明确要求「首屏的工件与 `/artifacts` 接口返回同一形状，不要在两处各写一份序列化逻辑」。所有 snake_case 转换集中在这里。
 
+**本任务顺带一处复用重构（评审发现）**：`src/lib/server/agent/stream-events.ts` 里已有一个私有的 `toPayloadRecord(payload: unknown): Record<string, unknown>`，本文件的 `serializeEvent` / `serializeToolCall` / `serializeArtifact` 需要完全相同的窄化逻辑。**不要在本文件里再写一份**：
+
+1. 把 `stream-events.ts` 的 `toPayloadRecord` 改成导出（加一行中文注释说明「API 序列化层与 SSE 层共用的 Json 载荷窄化」）
+2. 本文件 import `toPayloadRecord` 与 `AgentEventRowLike`（`AgentEventRowLike` 用作 `serializeEvent` 的参数类型，兼作「事件行最小契约」的文档），删掉本地那份 `toRecord`
+
 - [ ] **Step 1: 实现**
 
 （本文件的逻辑极薄，且形状由 Task 16 的端到端脚本断言，不单独写单测 —— 与项目里 `api/tasks/shared.ts`、`api/ai/shared.ts` 的既有做法一致。）
@@ -1357,6 +1382,7 @@ git commit -m "feat(agent): 会话查询 / 取消 pending Run / 深删会话（�
  * 首屏（接口 3）与工件刷新（接口 6）返回**同一形状**的工件数组 ——
  * 序列化只写这一份，避免两处漂移（P1 设计稿 §4.4）。
  */
+import { toPayloadRecord, type AgentEventRowLike } from "@/lib/server/agent/stream-events";
 import { formatDateTime } from "@/lib/server/core/time";
 
 /** 工具产出原文的序列化上限：超出则截断并置 result_truncated */
@@ -1455,23 +1481,16 @@ export interface SerializedAgentEvent {
   created_at: string;
 }
 
-/** 事件的 payload 归一成对象：Prisma 的 Json 列可能是 null / 数组 / 标量 */
-export function serializeEvent(row: {
-  id: number;
-  runId: number;
-  type: string;
-  payload: unknown;
-  createdAt: Date;
-}): SerializedAgentEvent {
-  const payload =
-    row.payload !== null && typeof row.payload === "object" && !Array.isArray(row.payload)
-      ? (row.payload as Record<string, unknown>)
-      : {};
+/**
+ * 事件的 payload 归一成对象：Prisma 的 Json 列可能是 null / 数组 / 标量。
+ * 参数用 AgentEventRowLike（事件行的最小契约），与 SSE 层共用同一定义。
+ */
+export function serializeEvent(row: AgentEventRowLike): SerializedAgentEvent {
   return {
     id: row.id,
     run_id: row.runId,
     type: row.type,
-    payload,
+    payload: toPayloadRecord(row.payload),
     created_at: formatDateTime(row.createdAt),
   };
 }
@@ -1510,8 +1529,8 @@ export function serializeToolCall(row: {
   summary: string | null;
   createdAt: Date;
 }): SerializedToolCall {
-  const params = toRecord(row.params);
-  const rawResult = row.result === null || row.result === undefined ? null : toRecord(row.result);
+  const params = toPayloadRecord(row.params);
+  const rawResult = row.result === null || row.result === undefined ? null : toPayloadRecord(row.result);
   const resultText = rawResult === null ? "" : JSON.stringify(rawResult);
   const truncated = resultText.length > RESULT_TEXT_LIMIT;
   return {
@@ -1548,7 +1567,7 @@ export function serializeArtifact(row: {
   payload: unknown;
   createdAt: Date;
 }): SerializedArtifact | null {
-  const payload = toRecord(row.payload);
+  const payload = toPayloadRecord(row.payload);
   const id = Number(payload.id);
   if (!Number.isFinite(id) || id <= 0) return null;
   return {
@@ -1560,12 +1579,6 @@ export function serializeArtifact(row: {
     href: String(payload.href ?? ""),
     created_at: formatDateTime(row.createdAt),
   };
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 ```
 
