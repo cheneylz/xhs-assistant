@@ -57,11 +57,12 @@ P1 的 A 块做完了：Agent 的中间过程文本现在会落库（D23），8 
 }
 ```
 
-**B 块必须遵守的三条渲染规则**（不遵守就会重复渲染或出现空白气泡）：
+**B 块必须遵守的四条渲染规则**（不遵守就会重复渲染、出空白气泡或漏卡片）：
 
 1. **`messages` 只含 user 消息** —— 助手文本一律从 `events`（历史）与 SSE（实时）来。最终答复同时存在于 `agent_messages` 与 `message_end` 事件里，`messages` 若也返回 assistant 行，同一段话会渲染两遍。
-2. **`events` 里不含 artifact、也不含 tool_execution_\*** —— 工件只认 `artifacts` 字段，工具卡只认 `tool_calls`（按 `tool_call_id` 归并，见设计稿 §5.3）。
+2. **`events` 里不含 artifact、也不含 tool_execution_\*** —— 工件只认 `artifacts` 字段，工具卡只认 `tool_calls`（按 `tool_call_id` 归并，见设计稿 §5.3）。`tool_calls` **不按 status 过滤**，可能含 `running` 行 —— 这正是跨边界归并需要的（设计稿 §5.3 的「start 早于分界、end 晚于分界」情形）。
 3. **`message_end` 的 `payload.text` 是可选的** —— 渲染前必须同时判定 `payload.role === "assistant"` 与 `text` 非空，否则会出空白气泡（Pi 对 user / toolResult / system 也发 message_end，且升级前落库的旧行是 `{role, trimmed:true}`）。
+4. **有些 `tool_execution_end` 帧既没有 summary、也没有对应的 `tool_calls` 行** —— Pi 在三种情况下会在走钩子**之前**就短路，因此不落库、无摘要：① 模型幻觉出不存在的工具名；② 参数 schema 校验失败；③ 输出被 `length` 截断。B 块遇到这种帧要么按「未记录」降级显示（有 toolCallId 无摘要），要么忽略 —— 但**不能假定每帧都有卡片、也不能假定每张卡都有摘要**。（P0 设计文档要求「P1 由事件回填」这类行，本批未做，见 §七 遗留项。）
 
 `*_truncated` 三个标记：达到上限即置位（**恰好等于上限时是假阳性**：events 1000 / tool_calls 200 / artifacts 200，取的都是**最新**那批，丢的是更早的）。
 
@@ -122,7 +123,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
-2. **跑 `npx prisma generate` 前先停 dev server**：`next dev` 会占住 `query_engine-windows.dll.node`，generate 报 `EPERM`（本轮踩到一次，靠事后补跑修掉）。
+2. **跑 `npx next build` 或 `npx prisma generate` 前，先停 dev server**：
+   - **`next build` 会覆盖 dev 的 `.next`** —— 本轮踩到：build 之后 dev server 对「此前从未被请求过」的路由做懒编译时，会加载坏掉的布局，表现为该路由**稳定 500**（其他接口正常），极难判断是环境问题还是代码问题。**修法：停 dev → `rm -rf .next` → 再起 dev**（只重启 dev 不清 `.next` 可能不够）。
+   - `prisma generate` 会被 `next dev` 占住的 `query_engine-windows.dll.node` 挡成 `EPERM`。
 
 3. **bash 传中文参数到命令串会损坏字节**：`curl -d '{"content":"帮我生成"}'` 到服务端会变成 U+FFFD。需要发中文请求体时，用 tsx 写 UTF-8 文件 + `curl --data-binary @file`。
 
@@ -137,14 +140,25 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 局限 | 说明 |
 |---|---|
 | `POST /messages` 的并发保护是 TOCTOU | 两个并发 POST 可能都通过检查（窗口毫秒级）。无部分唯一索引可用（`db push` 管不了 partial unique index）；前端在运行中禁用输入框已覆盖常见场景 |
-| DELETE 与 `POST /messages` 存在竞态 | 极端时序下可能留下孤儿事件行或让 `finishRun` 抛一次错（worker 现在会打日志，不再静默） |
-| 首屏 `result` 截断到 4000 字符 | 超出部分以 `result_truncated: true` 标记，展开只能看到前 4000 字符 |
+| DELETE 与 `POST /messages` 存在竞态 | 极端时序下可能留下孤儿**事件行与 Task 行**（`tasks` 表没有清理者，比事件行更值得注意），或让 `finishRun` 抛一次错（worker 现在会打日志，不再静默） |
+| **「阻断」这种工具卡状态在 P1 生产不可达** | 设计稿 §7.2 要求 4 种状态（运行中/成功/失败/阻断）都渲染正确，但要产生阻断数据需要：工具名在目录外（会被 Pi 在 `beforeToolCall` 之前短路，不落库）或目录里有 `publish` 级技能（当前 6 个都不是）。**B 块照实现即可，但验收时演示不出来**；`buildToolCallSummary` 的三条分支只在单测层面覆盖 |
+| 无 DB 行的 `tool_execution_end` 帧 | 见 §三 渲染规则 4。P0 设计文档（§1218 行）要求「P1 由事件回填」这类调用，**本批未做**，登记在 §七 |
+| SSE 推送全部事件类型 | 一次运行约 1400 帧里绝大多数是 `message_update`/`message_start` 噪声（载荷只有 `{role, trimmed}`）。B 块必须忽略未知类型。**若日后要在服务端按类型过滤，别把 `agent_end` 滤掉** —— 它是前端唯一可靠的结束信号 |
+| SSE 无并发连接上限 | 每个连接每 500ms 一次查询。单机自用够用；多实例/多标签页场景需限流（P2） |
+| 首屏 `result` 截断到 4000 字符 | 超出部分以 `result_truncated: true` 标记，展开只能看到前 4000 字符。`params` **未截断**（工具参数由模型按 schema 产出，体积可控） |
 | `listConversations` 无分页 | 左栏一次拉全量。会话数到几百时需要考虑分页（P2） |
+| 设计稿 §3.3(1) 与实现有出入 | 设计稿说空闲时「只查有没有新 Run」，实现里空闲 tick 仍照查 events（代价可忽略）。**以代码为准** |
 | 图片两个工具未做 | 设计稿 D24：开发库没有 `modelType=image` 的模型，做了也无法验收 |
 
 ---
 
 ## 七、遗留项
+
+### 7.0 「事件回填」缺失的工具调用行（P0 设计文档要求，不属于 C 也不属于 B）
+
+P0 设计文档要求：对「工具名不存在 / 参数校验失败 / 输出被 length 截断」这三种**没走钩子**的调用，由 P1 在事件侧回填 `agent_tool_calls` 行。P1-A 没做。后果与影响面见 §三 渲染规则 4 与 §六。
+
+归属未定 —— 它既不是 C 块（7 个业务工具）也不是 B 块（前端），更像 loop 侧的健壮性补强。**开工前先决定它归谁**，否则会一直悬着。实现思路：在 `agent-loop.mts` 的 `subscribe` 里，`tool_execution_end` 且 `toolCallRows` 里没有对应条目时，用事件里的 `toolCallId/toolName/result/isError/durationMs` 补落一行（`toolCallRows` 已经是内存里的 Map，不需要额外查库）。
 
 ### 7.1 C 块：7 个新工具（设计稿 §六）
 
@@ -152,6 +166,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 后两个需要**先做抽取重构**：查询逻辑目前内联在 `src/app/api/notes/route.ts`，要抽成 service 并让路由与工具共用
 - 每个工具都要在 `SkillDefinition.summarize` 补一份摘要（**必填字段，漏写过不了 `tsc`**），`summarizeCount` 已导出可复用
 - `agent.md` 提示词要补一条：`content_rewrite` 会改草稿，要求模型改写前说明将修改哪篇（设计稿 §八 风险 5）
+- **加完工具后要同步改两处断言**：`skill-catalog.test.ts` 的「包含全部 6 个预置技能」与 `agent-loop.test.ts` 的「列出全部 6 个技能的 skillKey」（预期内，不是回归）
+- 若想让「阻断」状态可见（§六 那条局限），需要引入一个 `publish` 级技能 —— **这是跨块的产品决策，先问用户**
 
 ### 7.2 B 块：前端三栏界面（设计稿 §五）
 
