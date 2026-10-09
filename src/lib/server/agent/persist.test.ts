@@ -30,19 +30,44 @@ describe("serializeEventForDb（事件序列化）", () => {
     expect(JSON.stringify(payload).length).toBeLessThan(2000);
   });
 
-  it("message_end 保留 usage（token 基线的唯一来源），大字段仍剔除", () => {
+  it("message_end 保留助手正文与 usage（D23：过程文本必须落库）", () => {
     const serialized = serializeEventForDb({
       type: "message_end",
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "A".repeat(5000) }],
+        content: [
+          { type: "text", text: "我先查一下当前热点，" },
+          { type: "toolCall", id: "call-1", name: "hot_refresh", arguments: {} },
+          { type: "text", text: "再生成选题。" },
+        ],
         usage: { input: 100, output: 20, totalTokens: 120 },
       },
     });
     const payload = serialized.payload as Record<string, unknown>;
-    expect(payload.trimmed).toBe(true);
+    expect(payload.role).toBe("assistant");
+    // 只拼 text 块：toolCall 块的 arguments 不能混进正文
+    expect(payload.text).toBe("我先查一下当前热点，再生成选题。");
+    // usage 是 token 基线的唯一来源，P0 验收脚本会断言它在
     expect(payload.usage).toEqual({ input: 100, output: 20, totalTokens: 120 });
-    expect(JSON.stringify(payload).length).toBeLessThan(2000);
+  });
+
+  it("message_end 的 user / tool 消息不留正文（避免与 agent_messages 重复渲染）", () => {
+    const userEnd = serializeEventForDb({
+      type: "message_end",
+      message: { role: "user", content: [{ type: "text", text: "帮我出选题" }] },
+    });
+    expect(userEnd.payload as Record<string, unknown>).toEqual({ role: "user" });
+
+    const toolEnd = serializeEventForDb({
+      type: "message_end",
+      message: { role: "tool", content: [{ type: "toolResult", content: "ok" }] },
+    });
+    expect(toolEnd.payload as Record<string, unknown>).toEqual({ role: "tool" });
+  });
+
+  it("message_end 内容为空时仍落一条（前端靠它判断该步结束）", () => {
+    const serialized = serializeEventForDb({ type: "message_end", message: { role: "assistant", content: [] } });
+    expect(serialized.payload as Record<string, unknown>).toEqual({ role: "assistant" });
   });
 });
 

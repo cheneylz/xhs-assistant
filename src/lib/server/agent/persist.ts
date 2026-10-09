@@ -9,7 +9,25 @@ import { shanghaiNow } from "../core/time";
 import { findSkillDefinition, type ArtifactKind } from "./skill-catalog";
 
 /** 体积较大的事件类型：只记录摘要，不记录完整消息体 */
-const TRIMMED_EVENT_TYPES = new Set(["message_update", "message_start", "message_end"]);
+const TRIMMED_EVENT_TYPES = new Set(["message_update", "message_start"]);
+
+/**
+ * 从消息的 content 块里拼出纯文本（只认 text 块，工具调用块跳过）。
+ *
+ * 用结构化最小接口而不是 import Pi 的 AssistantMessage —— 本文件刻意不含 Pi 依赖，
+ * 才能在 Next.js 侧与 vitest 里安全 import（见文件头）。
+ */
+export function extractMessageText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: string; text: string } => {
+      if (block === null || typeof block !== "object") return false;
+      const candidate = block as { type?: unknown; text?: unknown };
+      return candidate.type === "text" && typeof candidate.text === "string";
+    })
+    .map((block) => block.text)
+    .join("");
+}
 
 export interface SerializedEvent {
   type: string;
@@ -20,12 +38,28 @@ export interface SerializedEvent {
 export function serializeEventForDb(event: Record<string, unknown>): SerializedEvent {
   const type = String(event.type ?? "unknown");
 
+  // D23：message_end 保留助手正文 —— 前端据此渲染「我先查一下热点」这类过程预告。
+  // message_start / message_update 仍然裁掉：单轮约 300 条增量 vs 一次运行几条整段，
+  // 体积差两个数量级（P1 设计稿 D23）。
+  if (type === "message_end") {
+    const message = event.message as { role?: string; content?: unknown; usage?: unknown } | undefined;
+    const role = String(message?.role ?? "assistant");
+    const payload: Record<string, unknown> = { role };
+    // 只留助手正文：user 消息的正文由 agent_messages 承担（首屏接口单独返回），
+    // 两处都存会让前端有两条渲染来源，必然重复。
+    if (role === "assistant") {
+      const text = extractMessageText(message?.content);
+      if (text) payload.text = text;
+    }
+    // usage 是 P0 唯一的 token 明细来源（agent_runs.tokens_used 之外的明细），
+    // 体积很小，必须保留；P0 验收脚本会断言它在。
+    if (message?.usage !== undefined) payload.usage = message.usage;
+    return { type, payload: payload as Prisma.InputJsonValue };
+  }
+
   if (TRIMMED_EVENT_TYPES.has(type)) {
-    const message = event.message as { role?: string; usage?: unknown } | undefined;
+    const message = event.message as { role?: string } | undefined;
     const payload: Record<string, unknown> = { role: message?.role ?? "assistant", trimmed: true };
-    // message_end 的 usage 是 P0 唯一的 token 基线（agent_runs.tokens_used 之外的明细来源），
-    // 体积很小，必须保留；整条 message 的其余部分仍然剔除。
-    if (type === "message_end" && message?.usage !== undefined) payload.usage = message.usage;
     return { type, payload: payload as Prisma.InputJsonValue };
   }
 
