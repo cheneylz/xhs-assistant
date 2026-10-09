@@ -1175,6 +1175,7 @@ pi-ai 的 `detectCompat` 匹配规则（读 `node_modules/@earendil-works/pi-ai/
 - 工作区副作用：验收的 `topic.generate` 会真实写入 `topic_suggestions`（这是被断言的产品产出，脚本不清理）；`hot_refresh` 会重算 `hot_topics` 快照。两者都是工具的正常行为。
 - `agent_tool_calls` 只覆盖「正常执行」与「护栏阻断」两类；参数校验失败与 `length` 截断导致的失败调用不进该表（Pi 在这两种情况下不走任何钩子，只发 `tool_execution_end` 事件），需 P1 由事件回填。
 - 自定义技能（`skill_registry`）当前**不可作为工具调用**：`checkToolAllowed` 是 fail-closed 的，不在 `SKILL_CATALOG` 里的名称一律阻断。P1 放开自定义技能时需同时把其 skillKey 纳入 D18 的名称断言。
+- **`maxSteps` / `tokenBudget` 只落库不拦截**（§7.4）：P0 的硬拦只有两道 —— 10 分钟墙钟超时与连续 3 次工具失败。模型若陷入长循环，会在墙钟超时处被中止，期间可能超出预期成本。**该取舍已于 P0 验收后经确认接受**，步数/预算硬拦截随 §7.4 的 `finishTurn` 钩子一并留到 P1。
 
 ---
 
