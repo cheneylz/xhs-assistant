@@ -77,6 +77,21 @@ Pi 包的 `exports` 映射**只声明 `types` + `import` 条件，无 `require`�
 
 ---
 
+## 单元测试铁律：不得触达真实数据库之外的外部世界
+
+Task 7 暴露了一个严重隐患：计划里的 `tool-registry.test.ts` 断言 `hot.refresh` 会抛「未绑定 PC 账号」。
+
+**它实际没抛** —— 开发库里 `platform_accounts` 有账号、`account_cookie_versions` 有 Cookie，两道守卫都过了；只因 `keyword_groups` 为空，`collectHotTopicsForUser` 才短路在「无种子关键词，请先配置关键词组」返回 `{collected: 0}`。
+
+**这意味着该测试是一条随时会响的引线**：只要有人往开发库加一个关键词组，`npm test` 就会向**小红书真实搜索接口**发请求。
+
+**铁律**：
+- 单元测试**不得**依赖"某个表恰好为空"来避免网络调用
+- 断言"某工具会失败"时，必须选一个**在进入外部调用之前就必然失败**的守卫（如 `modelConfig: null` → 「未配置文本模型」）
+- 需要验证外部行为的，放集成测试并显式标记，不进 `npm test` 默认路径
+
+---
+
 ## 文件结构
 
 | 文件 | 职责 | 含 Pi 依赖 | 后缀 |
