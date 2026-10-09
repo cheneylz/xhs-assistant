@@ -7,6 +7,8 @@
  * 【本文件不含 Pi 依赖】—— 用结构化最小接口接收事件行，便于离线单测。
  * 【有意的类型重复】AgentEventRowLike 与 Prisma 的 AgentEvent 结构一致但不 import 它：
  * 路由传入的是 Prisma 行（多余字段被结构性兼容），测试传入的是字面量对象。
+ * 【返回值注意】attachToolCallSummaries 补过摘要的行是**新的普通对象**
+ * （其余字段按引用共享，不会被就地修改；未补摘要的行按原引用返回）。
  */
 
 /** 事件行的最小结构（Prisma 的 agentEvent.findMany 返回值满足它） */
@@ -88,6 +90,8 @@ export function collectToolCallIds(rows: Array<{ type: string; payload: unknown 
  *
  * 时序是安全的：afterToolCall 的落库 await 完成后 Pi 才发 tool_execution_end，
  * 因此事件行存在时摘要一定已经提交（P1 设计稿 §4.3 的落地细节）。
+ * 被护栏阻断的调用不走 afterToolCall（Pi 直接构造错误结果），它的摘要由 beforeToolCall
+ * 写入 —— 同样在 tool_execution_end 发出之前 await 完成，因此这个时序保证对两类路径都成立。
  */
 export function attachToolCallSummaries<T extends AgentEventRowLike>(
   rows: T[],
@@ -100,6 +104,7 @@ export function attachToolCallSummaries<T extends AgentEventRowLike>(
     const toolCallId = payload.toolCallId;
     if (typeof toolCallId !== "string") return row;
     const summary = summaries.get(toolCallId);
+    // 空串按「没有摘要」处理：与 findToolCallSummaries 的过滤口径一致（那边同样丢弃空值）
     if (!summary) return row;
     // 不就地改：rows 是 Prisma 返回对象，就地改会污染调用方的数据
     return { ...row, payload: { ...payload, summary } };

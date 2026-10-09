@@ -18,6 +18,8 @@ export interface RouteContext {
  * SSE 等流式接口返回的是 `new Response(readableStream)`。
  * 这是安全的加宽 —— `NextResponse extends Response`，148 个既有路由的返回值
  * 仍然满足该类型，无需逐处修改（P1 设计稿 §3.4）。
+ * 注意：流一旦作为 Response 返回，此后的异步异常不会再经过这里，
+ * SSE 等流式路由必须自行捕获并收尾（见 interface 5 的实现）。
  */
 export type RouteHandler = (req: NextRequest, ctx: RouteContext) => Promise<Response> | Response;
 

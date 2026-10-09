@@ -13,7 +13,7 @@ import {
 } from "./stream-events";
 
 /** 造一条事件行（结构对齐 Prisma 的 agentEvent.findMany 返回值） */
-function row(type: string, payload: Record<string, unknown>, id = 1) {
+function row(type: string, payload: unknown, id = 1) {
   return { id, runId: 10, type, payload, createdAt: new Date("2026-10-09T10:00:00Z") };
 }
 
@@ -75,19 +75,28 @@ describe("collectToolCallIds / attachToolCallSummaries（摘要补齐）", () =>
     expect((event.payload as Record<string, unknown>).summary).toBeUndefined();
   });
 
-  it("缺摘要、载荷为 null、toolCallId 非字符串时都不抛错", () => {
+  it("缺摘要、载荷为 null / 数组 / 标量、toolCallId 非字符串时都不抛错", () => {
     const rows = [
       row("tool_execution_end", { toolCallId: "call-9" }, 1),
-      row("tool_execution_end", {}, 2),
-      row("tool_execution_end", { toolCallId: 123 }, 3),
+      row("tool_execution_end", null, 2),
+      row("tool_execution_end", [1, 2], 3),
+      row("tool_execution_end", "标量", 4),
+      row("tool_execution_end", { toolCallId: 123 }, 5),
     ];
     const patched = attachToolCallSummaries(rows, new Map([["call-1", "摘要"]]));
-    expect(patched).toHaveLength(3);
-    expect(patched.every((item) => item.payload !== null)).toBe(true);
+
+    expect(patched).toHaveLength(5);
+    // 没被补摘要的行必须按引用原样返回（不产生新对象，也不抛错）
+    patched.forEach((item, index) => expect(item).toBe(rows[index]));
   });
 
   it("摘要表为空时直接返回原数组（不产生无谓拷贝）", () => {
     const rows = [row("tool_execution_end", { toolCallId: "call-1" })];
     expect(attachToolCallSummaries(rows, new Map())).toBe(rows);
+  });
+
+  it("摘要为空串时按「没有摘要」处理，行原样返回", () => {
+    const rows = [row("tool_execution_end", { toolCallId: "call-1" })];
+    expect(attachToolCallSummaries(rows, new Map([["call-1", ""]]))[0]).toBe(rows[0]);
   });
 });
