@@ -23,7 +23,8 @@
  *   7. 取消          终态 Run → 409、不存在的 Run → 404、pending Run → 200
  *                    （Run=cancelled / Task=failed / 会话=idle）
  *   8. 删除保护      有 pending Run 的会话 DELETE → 409；该 Run 转终态后 DELETE → 200
- *   9. 清理          脚本产生的会话全部深删、临时用户删掉，库计数归零
+ *   9. 清理          脚本产生的会话全部深删、临时用户删掉，各表计数回到脚本开始前的基线
+ *                    （证明脚本没有留下孤儿行；不能断言「绝对归零」——库里可能有用户自己的会话）
  *
  * 环境变量：AGENT_API_BASE 可覆盖 dev server 地址（默认 http://127.0.0.1:3000）
  */
@@ -273,7 +274,7 @@ interface TrackedConversation {
  * 深删一个会话。删之前要做两件事，否则会留下孤儿行或删不动：
  *   1. 把还没被领走的 pending Run 打成终态 —— 否则 deleteConversationDeep 直接返回 active_run；
  *   2. 等已被 worker 领走的 running Run 跑完 —— 事件表没有外键，会话删掉后 worker 仍会写事件行，
- *      那些行永远查不回来（库计数也就归不了零）。
+ *      那些行永远查不回来（库计数也就回不到基线）。
  */
 async function cleanupConversation(entry: TrackedConversation): Promise<void> {
   const now = shanghaiNow();
@@ -305,16 +306,17 @@ async function cleanupConversation(entry: TrackedConversation): Promise<void> {
   if (result !== "deleted") console.warn(`[清理] 会话 ${entry.conversationId}（${entry.label}）删除结果：${result}`);
 }
 
-/** 打印并断言六张表的计数归零 */
-async function countAgentRows(): Promise<Record<string, number>> {
-  return {
-    conversations: await prisma.agentConversation.count(),
-    runs: await prisma.agentRun.count(),
-    messages: await prisma.agentMessage.count(),
-    events: await prisma.agentEvent.count(),
-    toolCalls: await prisma.agentToolCall.count(),
-    agentTasks: await prisma.task.count({ where: { taskType: "agent_run" } }),
-  };
+/** 脚本开始前的 Agent 表计数：结束时必须回到这个值（不能用「绝对归零」——库里可能有用户自己的会话） */
+async function snapshotAgentTables(): Promise<Record<string, number>> {
+  const [conversations, runs, messages, events, toolCalls, agentTasks] = await Promise.all([
+    prisma.agentConversation.count(),
+    prisma.agentRun.count(),
+    prisma.agentMessage.count(),
+    prisma.agentEvent.count(),
+    prisma.agentToolCall.count(),
+    prisma.task.count({ where: { taskType: "agent_run" } }),
+  ]);
+  return { conversations, runs, messages, events, toolCalls, agentTasks };
 }
 
 // ---------- 主流程 ----------
@@ -323,6 +325,10 @@ async function main(): Promise<void> {
   // 脚本产生的东西全部登记在这里，失败时 finally 也要尽力清掉
   const tracked: TrackedConversation[] = [];
   let tempUserId: number | null = null;
+
+  // 在任何造数之前记录基线：第 9 项以它为「清干净」的判据，避免库里已有用户会话时误报
+  const baseline = await snapshotAgentTables();
+  console.log(`【基线】脚本开始前各表计数 ${JSON.stringify(baseline)}`);
 
   try {
     // 选一个配了默认文本模型的用户：SSE 那一步要真跑一轮 ReAct 循环，没模型只会立刻失败
@@ -628,16 +634,18 @@ async function main(): Promise<void> {
       console.log(`【9/9】清理：临时用户 ${tempUserId} 已删除`);
       tempUserId = null;
     }
-    const counts = await countAgentRows();
-    console.log(`【9/9】清理：库计数 ${JSON.stringify(counts)}`);
-    for (const [table, count] of Object.entries(counts)) {
-      assert(count === 0, `清理后 ${table} 应归零，实际 ${count}`);
-    }
-    console.log("【9/9】清理 通过：会话/事件/工具调用/Task 全部归零");
+    const after = await snapshotAgentTables();
+    console.log(`【9/9】清理：基线计数 ${JSON.stringify(baseline)}`);
+    console.log(`【9/9】清理：实际计数 ${JSON.stringify(after)}`);
+    assert(
+      Object.entries(after).every(([key, value]) => value === baseline[key]),
+      `清理后各表计数应回到基线 ${JSON.stringify(baseline)}，实际 ${JSON.stringify(after)}`,
+    );
+    console.log("【9/9】清理 通过：基线 == 实际，脚本没有留下孤儿行");
 
     console.log(`\nP1-A 接口层验收全部通过（SSE 步骤耗时 ${sseElapsed}ms）`);
   } finally {
-    // 失败路径也要尽力清干净：残留的 pending Run 会污染下一次验收与库计数
+    // 失败路径也要尽力清干净：残留的 pending Run 会污染开发库、干扰下一次验收
     for (const entry of tracked) {
       try {
         await cleanupConversation(entry);
