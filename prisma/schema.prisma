@@ -632,3 +632,84 @@ model ApiLog {
   @@index([platform])
   @@map("api_logs")
 }
+
+// ---------- Agent 工作台（P0 自主 Agent 引擎）----------
+/// 会话：一个对话 = 一个独立任务，多会话并行互不干扰
+model AgentConversation {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String   @default("新任务")
+  status    String   @default("idle")
+  createdAt DateTime @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@map("agent_conversations")
+}
+
+/// 消息：对话语义层（LLM 上下文来源）
+model AgentMessage {
+  id             Int      @id @default(autoincrement())
+  conversationId Int      @map("conversation_id")
+  runId          Int?     @map("run_id")
+  role           String
+  content        String   @db.Text @default("")
+  toolCalls      Json?    @map("tool_calls")
+  toolCallId     String?  @map("tool_call_id")
+  tokenUsage     Json?    @map("token_usage")
+  createdAt      DateTime @map("created_at")
+
+  @@index([conversationId, id])
+  @@map("agent_messages")
+}
+
+/// 执行：一次 ReAct 循环 = 一个 Run，1:1 绑定 Task
+model AgentRun {
+  id               Int       @id @default(autoincrement())
+  conversationId   Int       @map("conversation_id")
+  userId           Int       @map("user_id")
+  taskId           Int       @map("task_id")
+  status           String    @default("pending")
+  triggerMessageId Int?      @map("trigger_message_id")
+  stepCount        Int       @default(0)
+  maxSteps         Int       @default(20)
+  tokenBudget      Int       @default(200000)
+  tokensUsed       Int       @default(0)
+  errorType        String?   @map("error_type")
+  startedAt        DateTime? @map("started_at")
+  finishedAt       DateTime? @map("finished_at")
+  createdAt        DateTime  @map("created_at")
+
+  @@index([status, createdAt])
+  @@map("agent_runs")
+}
+
+/// 事件：循环过程细节，SSE 订阅源（自增 id 即 Last-Event-ID）
+model AgentEvent {
+  id        Int      @id @default(autoincrement())
+  runId     Int      @map("run_id")
+  type      String
+  payload   Json
+  createdAt DateTime @map("created_at")
+
+  @@index([runId, id])
+  @@map("agent_events")
+}
+
+/// 工具调用：审计与度量
+model AgentToolCall {
+  id         Int      @id @default(autoincrement())
+  runId      Int      @map("run_id")
+  stepIndex  Int      @map("step_index")
+  toolName   String   @map("tool_name")
+  toolCallId String   @map("tool_call_id")
+  params     Json
+  result     Json?
+  status     String   @default("running")
+  errorType  String?  @map("error_type")
+  durationMs Int?     @map("duration_ms")
+  createdAt  DateTime @map("created_at")
+
+  @@index([runId, stepIndex])
+  @@map("agent_tool_calls")
+}
