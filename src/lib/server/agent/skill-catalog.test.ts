@@ -3,7 +3,7 @@
  * 覆盖：目录完整性、元数据字段、riskLevel 合法性
  */
 import { describe, expect, it } from "vitest";
-import { SKILL_CATALOG, SKILL_RISK_LEVELS, findSkillDefinition } from "./skill-catalog";
+import { SKILL_CATALOG, SKILL_RISK_LEVELS, findSkillDefinition, summarizeCount } from "./skill-catalog";
 
 describe("SKILL_CATALOG（技能目录）", () => {
   it("包含全部 6 个预置技能", () => {
@@ -95,5 +95,18 @@ describe("SKILL_CATALOG（技能目录）", () => {
       const summary = item.summarize(samples[item.skillKey] ?? {});
       expect(summary.length, `${item.skillKey} 的摘要不能为空`).toBeGreaterThan(0);
     }
+  });
+
+  it("summarizeCount 的强制转换表（C 块 7 个新工具都要复用它）", () => {
+    expect(summarizeCount([1, 2, 3])).toBe(3);
+    expect(summarizeCount(7)).toBe(7);
+    expect(summarizeCount("12")).toBe(12);
+    expect(summarizeCount(undefined)).toBe(0);
+    expect(summarizeCount(null)).toBe(0);
+    expect(summarizeCount("")).toBe(0);
+    expect(summarizeCount("abc")).toBe(0);
+    expect(summarizeCount({})).toBe(0);
+    // Number(true) === 1：布尔不是「条数」，但工具不会返回布尔，这里只把现有行为钉住
+    expect(summarizeCount(true)).toBe(1);
   });
 });

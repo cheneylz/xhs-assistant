@@ -39,6 +39,10 @@ describe("buildToolCallSummary（工具卡摘要）", () => {
     expect(buildToolCallSummary({ toolName: "not_exist", details: {}, isError: false, blockedReason: reason })).toBe(reason);
   });
 
+  it("guard 给了空串 reason 时用兜底文案（对外文案不能是空的）", () => {
+    expect(buildToolCallSummary({ toolName: "not_exist", details: {}, isError: false, blockedReason: "" })).toBe("被护栏阻断");
+  });
+
   it("执行失败时给固定说明，不把原始错误当摘要", () => {
     expect(buildToolCallSummary({ toolName: "hot_refresh", details: {}, isError: true })).toBe("执行失败（展开可见错误详情）");
   });

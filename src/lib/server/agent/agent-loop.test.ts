@@ -124,6 +124,25 @@ function createFakeTool(
   } as never;
 }
 
+/**
+ * 造一个 execute 会抛错的假工具。
+ *
+ * 复现 Pi 的失败路径：抛错被 Pi 捕获后转成 isError + 错误文本，且 details 恒为 {}
+ * （错误正文只在 content 里）—— 这就是「卡片展开没内容可看」的根因形态。
+ */
+function createThrowingTool(name: string, message: string) {
+  return {
+    name,
+    label: name,
+    description: "假工具（测试用，执行必抛错）",
+    parameters: Type.Object({}),
+    replay: "never",
+    execute: async () => {
+      throw new Error(message);
+    },
+  } as never;
+}
+
 /** 假落库实现：把每次调用记进数组，便于断言 */
 function createFakePersisters() {
   const events: Array<Record<string, unknown>> = [];
@@ -349,6 +368,46 @@ describe("runAgentLoop（循环编排）", () => {
 
     expect(fake.finalized).toHaveLength(1);
     expect(fake.finalized[0]?.summary).toBe("收录 87 条热点");
+  });
+
+  it("工具执行失败时落库可读错误文本（首屏不回放 tool_execution_end，卡片展开要有内容）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createThrowingTool("hot_refresh", "小红书接口超时")],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "hot_refresh", {}),
+        assistantText("热点刷新失败"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.finalized).toHaveLength(1);
+    expect(fake.finalized[0]?.status).toBe("failed");
+    // 失败调用的 details 是 {}，落库必须补上错误正文，否则刷新后卡片展开空无一物
+    expect(fake.finalized[0]?.result).toMatchObject({ error: "小红书接口超时" });
+    expect(fake.finalized[0]?.summary).toBe("执行失败（展开可见错误详情）");
+  });
+
+  it("beforeToolCall 落库失败时走兜底分支，终态记录仍带摘要", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 87 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "hot_refresh", {}),
+        assistantText("完成"),
+      ]),
+    });
+    // 第一次落库（running）失败 → entry.rowId 保持 null → afterToolCall 走 persistToolCall 兜底分支
+    fake.persistToolCall.mockRejectedValueOnce(new Error("数据库抖动"));
+    await runAgentLoop(options);
+
+    // 两次落库尝试：第一次（running）被拒，第二次是兜底写的终态记录
+    expect(fake.persistToolCall.mock.calls).toHaveLength(2);
+    expect(fake.persistToolCall.mock.calls[0]?.[0]).toMatchObject({ status: "running" });
+    // 被拒的那次没进 started 数组，因此 started[0] 就是兜底的终态记录
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ status: "succeeded" });
+    expect(fake.started[0]?.summary).toBe("收录 87 条热点");
+    // 没有 rowId → 不走 finalize 分支（终态记录由兜底 persistToolCall 写入）
+    expect(fake.finalized).toHaveLength(0);
   });
 
   it("阻断路径的摘要用 guard 的 reason（该路径不写 finalized）", async () => {

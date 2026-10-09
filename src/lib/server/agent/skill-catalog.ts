@@ -187,7 +187,7 @@ description: 对草稿执行合规规则检测与三道门禁审校
       hrefPrefix: "/platforms/xhs/review?id=",
     },
     summarize: (details) =>
-      `审校工单 #${summarizeCount(details.review_id)}，门禁 ${String(details.gate_status ?? "未知")}`,
+      `审校工单 #${summarizeCount(details.review_id)}，门禁 ${String(details.gate_status || "未知")}`,
   },
   {
     skillKey: "script_generate",

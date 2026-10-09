@@ -16,6 +16,7 @@ import { pruneByCharBudget, summarizeToolResult } from "./context.ts";
 import { checkToolAllowed, createFailureTracker } from "./guards.ts";
 import {
   extractArtifacts,
+  extractMessageText,
   finalizeToolCall as finalizeToolCallInDb,
   persistToolCall as persistToolCallInDb,
 } from "./persist.ts";
@@ -33,9 +34,6 @@ const DEFAULT_RUN_TIMEOUT_MS = 600_000;
 
 /** 工具结果摘要保留的列表条数 */
 const SUMMARY_LIST_LIMIT = 10;
-
-/** guard 未给 reason 时的兜底文案（理论上不会发生：阻断分支一定有 reason） */
-const BLOCKED_REASON_FALLBACK = "被护栏阻断";
 
 /** 本地中止原因：循环自己知道是谁按下的中止，必须显式记录 */
 type AbortReason = "timeout" | "tool_failures";
@@ -317,7 +315,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
               toolName: context.toolCall.name,
               details: {},
               isError: false,
-              blockedReason: verdict.reason ?? BLOCKED_REASON_FALLBACK,
+              blockedReason: verdict.reason,
             }),
           });
         } catch (error) {
@@ -352,13 +350,19 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
       const durationMs = entry ? Date.now() - entry.startedAt : null;
       // 摘要与结果同一次写入：落库时是唯一同时握有「工具 + 结果」的时刻（D21）
       const summary = buildToolCallSummary({ toolName: context.toolCall.name, details, isError });
+      // 失败调用的 details 恒为 {}（Pi 把错误文本放在 content 里），而首屏不回放
+      // tool_execution_end 事件 —— 不补这一条，卡片摘要承诺的「展开可见错误详情」
+      // 在刷新后就无处可看。**只替换落库用的对象**：details 仍原样用于摘要与工件抽取。
+      const errorText = isError ? extractMessageText(context.result.content) : "";
+      const persistedResult =
+        isError && errorText && Object.keys(details).length === 0 ? { error: errorText } : details;
 
       // 1) 工具调用落库（正常执行路径）
       try {
         if (entry?.rowId != null) {
           await finalizeToolCallRow({
             id: entry.rowId,
-            result: details,
+            result: persistedResult,
             status: isError ? "failed" : "succeeded",
             errorType: isError ? "tool_error" : null,
             durationMs,
@@ -371,7 +375,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             toolName: context.toolCall.name,
             toolCallId: context.toolCall.id,
             params: asRecord(context.args),
-            result: details,
+            result: persistedResult,
             status: isError ? "failed" : "succeeded",
             errorType: isError ? "tool_error" : null,
             durationMs,

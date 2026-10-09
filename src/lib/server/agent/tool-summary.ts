@@ -21,8 +21,8 @@ export interface ToolCallSummaryInput {
 }
 
 export function buildToolCallSummary(input: ToolCallSummaryInput): string {
-  if (input.blockedReason) return input.blockedReason;
-  if (input.blockedReason === "") return BLOCKED_FALLBACK;
+  // guard 正常会给非空 reason；缺省或空串都走兜底：摘要是对外文案，不能出现空卡片
+  if (input.blockedReason != null) return input.blockedReason || BLOCKED_FALLBACK;
   if (input.isError) return FAILED_SUMMARY;
 
   const definition = findSkillDefinition(input.toolName);
