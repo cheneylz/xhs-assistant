@@ -268,10 +268,17 @@ export async function sweepStuckRuns(thresholdMinutes: number): Promise<number> 
   return stuckRuns.length;
 }
 
-/** 取会话消息（供循环组装上下文） */
-export async function listMessages(conversationId: number, limit = 100): Promise<Array<{ role: string; content: string; toolCallId: string | null }>> {
+/**
+ * 取会话消息（供循环组装上下文）。
+ * excludeMessageId：排除某条消息（worker 用它排除本次触发的用户消息）。
+ */
+export async function listMessages(
+  conversationId: number,
+  limit = 100,
+  excludeMessageId?: number,
+): Promise<Array<{ role: string; content: string; toolCallId: string | null }>> {
   const messages = await prisma.agentMessage.findMany({
-    where: { conversationId },
+    where: { conversationId, ...(excludeMessageId !== undefined ? { id: { not: excludeMessageId } } : {}) },
     orderBy: { id: "asc" },
     take: limit,
   });

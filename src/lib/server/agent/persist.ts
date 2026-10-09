@@ -37,10 +37,10 @@ export function serializeEventForDb(event: Record<string, unknown>): SerializedE
   return { type, payload: payload as Prisma.InputJsonValue };
 }
 
-/** 落一条 Agent 事件 */
-export async function persistAgentEvent(runId: number, event: Record<string, unknown>): Promise<void> {
+/** 落一条 Agent 事件，返回事件 id（自增 id 即 SSE 的 Last-Event-ID） */
+export async function persistAgentEvent(runId: number, event: Record<string, unknown>): Promise<number> {
   const serialized = serializeEventForDb(event);
-  await prisma.agentEvent.create({
+  const created = await prisma.agentEvent.create({
     data: {
       runId,
       type: serialized.type,
@@ -48,6 +48,7 @@ export async function persistAgentEvent(runId: number, event: Record<string, unk
       createdAt: shanghaiNow(),
     },
   });
+  return created.id;
 }
 
 export interface ArtifactRef {
