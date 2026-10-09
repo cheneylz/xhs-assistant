@@ -34,3 +34,6 @@ npm-debug.log*
 
 # AI开发约束
 CLAUDE.md
+
+# superpowers 可视化头脑风暴的临时产物（原型图等，仅本地）
+.superpowers/
