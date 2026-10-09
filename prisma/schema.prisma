@@ -691,6 +691,8 @@ model AgentRun {
   conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  /// 会话内 Run 列表与「是否有活跃 Run」：SSE 活跃时每 500ms 查一次
+  @@index([conversationId, status])
   @@map("agent_runs")
 }
 
@@ -725,5 +727,7 @@ model AgentToolCall {
   createdAt  DateTime @map("created_at")
 
   @@index([runId, stepIndex])
+  /// 按 toolCallId 批量取摘要（SSE 给 tool_execution_end 补摘要）
+  @@index([toolCallId])
   @@map("agent_tool_calls")
 }

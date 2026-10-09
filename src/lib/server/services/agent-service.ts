@@ -337,19 +337,26 @@ export async function listConversationUserMessages(conversationId: number, limit
   });
 }
 
-/** 多个 Run 的工具调用（按 id 升序，中栏已完成的工具卡） */
-export async function listToolCallsForRuns(runIds: number[]): Promise<AgentToolCall[]> {
+/** 多个 Run 的工具调用（中栏已完成的工具卡；取**最新** limit 条再翻正序） */
+export async function listToolCallsForRuns(runIds: number[], limit = 200): Promise<AgentToolCall[]> {
   if (runIds.length === 0) return [];
-  return prisma.agentToolCall.findMany({ where: { runId: { in: runIds } }, orderBy: { id: "asc" } });
+  const rows = await prisma.agentToolCall.findMany({
+    where: { runId: { in: runIds } },
+    orderBy: { id: "desc" },
+    take: limit,
+  });
+  return rows.reverse();
 }
 
-/** 多个 Run 的工件事件（按 id 升序，右栏工件） */
-export async function listArtifactEvents(runIds: number[]): Promise<AgentEvent[]> {
+/** 多个 Run 的工件事件（右栏工件；取**最新** limit 条再翻正序） */
+export async function listArtifactEvents(runIds: number[], limit = 200): Promise<AgentEvent[]> {
   if (runIds.length === 0) return [];
-  return prisma.agentEvent.findMany({
+  const rows = await prisma.agentEvent.findMany({
     where: { runId: { in: runIds }, type: "artifact" },
-    orderBy: { id: "asc" },
+    orderBy: { id: "desc" },
+    take: limit,
   });
+  return rows.reverse();
 }
 
 /** 会话全部 Run 的事件 id 上界（无事件为 0）—— 前端 SSE 的续传起点 */
@@ -390,11 +397,20 @@ export async function listEventsAfter(runIds: number[], afterId: number, limit: 
   });
 }
 
-/** 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用，key 是 toolCallId） */
-export async function findToolCallSummaries(toolCallIds: string[]): Promise<Map<string, string>> {
-  if (toolCallIds.length === 0) return new Map();
+/**
+ * 批量取工具调用摘要（SSE 给 tool_execution_end 补摘要用，key 是 toolCallId）。
+ *
+ * **必须按 runIds 圈定范围**：agent_tool_calls 对 tool_call_id 没有唯一约束，
+ * 而很多 provider 会给出可预测的 id（call_1 / call_2 …）。不圈范围的话，
+ * 别的会话（甚至别的用户）的同名 toolCallId 会把它的摘要盖到本次事件上。
+ */
+export async function findToolCallSummaries(
+  runIds: number[],
+  toolCallIds: string[],
+): Promise<Map<string, string>> {
+  if (runIds.length === 0 || toolCallIds.length === 0) return new Map();
   const rows = await prisma.agentToolCall.findMany({
-    where: { toolCallId: { in: toolCallIds }, summary: { not: null } },
+    where: { runId: { in: runIds }, toolCallId: { in: toolCallIds }, summary: { not: null } },
     select: { toolCallId: true, summary: true },
   });
   const map = new Map<string, string>();
@@ -430,26 +446,43 @@ export async function cancelPendingRun(runId: number, userId: number): Promise<C
   }
 
   const now = shanghaiNow();
-  const updated = await prisma.agentRun.updateMany({
-    where: { id: runId, status: "pending" },
-    data: { status: "cancelled", errorType: "cancelled_by_user", finishedAt: now },
+  // 三步写入必须同事务：任一步失败都会留下「Run 已取消但 Task 仍 pending、会话卡在 running」
+  // 的不可修复状态 —— 重试只会拿到 409（Run 已是终态）。
+  return prisma.$transaction(async (tx): Promise<CancelRunResult> => {
+    // 原子守卫：worker 的 claimPendingRuns 同样带 status='pending' 条件（FOR UPDATE SKIP LOCKED），
+    // 两边谁先提交谁赢 —— 读到 pending 但写时已被领走时 count 为 0。
+    const updated = await tx.agentRun.updateMany({
+      where: { id: runId, status: "pending" },
+      data: { status: "cancelled", errorType: "cancelled_by_user", finishedAt: now },
+    });
+    if (updated.count === 0) {
+      return {
+        outcome: "conflict",
+        reason: "Run 已不在 pending 状态（已被 worker 领取开始执行，或已被取消），无法取消",
+      };
+    }
+
+    // 同步 Task：任务中心里这条 Agent 任务不能永远停在 pending（与 finishRun 同一约定）
+    await tx.task.update({
+      where: { id: run.taskId },
+      data: { status: "failed", progress: 0, finishedAt: now },
+    });
+
+    // 会话必须回到 idle：否则前端会一直停在「执行中」（输入框禁用、发不出下一条）。
+    // 这里直接写 updatedAt，而不是调 updateConversationStatus —— 那个助手用全局 prisma，
+    // 进不了事务；漏掉 updatedAt 会让按更新时间排序的会话列表错乱。
+    const stillActive = await tx.agentRun.count({
+      where: { conversationId: run.conversationId, status: { in: ["pending", "running"] } },
+    });
+    if (stillActive === 0) {
+      await tx.agentConversation.update({
+        where: { id: run.conversationId },
+        data: { status: "idle", updatedAt: now },
+      });
+    }
+
+    return { outcome: "cancelled", run: await tx.agentRun.findUniqueOrThrow({ where: { id: runId } }) };
   });
-  if (updated.count === 0) {
-    return { outcome: "conflict", reason: "Run 已被 worker 领取并开始执行，P1 不支持中止运行中的任务" };
-  }
-
-  // 同步 Task：任务中心里这条 Agent 任务不能永远停在 pending（与 finishRun 同一约定）
-  await prisma.task.update({
-    where: { id: run.taskId },
-    data: { status: "failed", progress: 0, finishedAt: now },
-  });
-
-  // 会话必须回到 idle：否则前端会一直停在「执行中」（输入框禁用、发不出下一条）
-  if (!(await hasActiveRun(run.conversationId))) {
-    await updateConversationStatus({ conversationId: run.conversationId, status: "idle" });
-  }
-
-  return { outcome: "cancelled", run: await prisma.agentRun.findUniqueOrThrow({ where: { id: runId } }) };
 }
 
 /**
