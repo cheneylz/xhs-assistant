@@ -2846,7 +2846,7 @@ git commit -m "feat(agent): 新增 Agent 系统提示词与循环装配，支持
 在 `src/worker/index.ts` 的 import 区追加：
 
 ```ts
-import { claimPendingRuns, finishRun, sweepStuckRuns } from "../lib/server/services/agent-service";
+import { claimPendingRuns, finishRun, sweepStuckRuns, updateConversationStatus } from "../lib/server/services/agent-service";
 import { buildAgentTools } from "../lib/server/agent/tool-registry";
 import { buildPiModel } from "../lib/server/agent/model-bridge";
 import { runAgentLoop } from "../lib/server/agent/agent-loop";
@@ -2955,13 +2955,14 @@ async function executeAgentRun(run: {
     stepCount,
   });
 
-  // 会话回到 idle；若标题仍是默认值则按首条用户消息派生
-  await prisma.agentConversation.update({
-    where: { id: run.conversationId },
-    data: {
-      status: "idle",
-      title: conversation?.title === "新任务" ? triggerMessage.content.slice(0, 20) : conversation?.title,
-    },
+  // 会话回到 idle；若标题仍是默认值则按首条用户消息派生。
+  // 必须走 updateConversationStatus：它负责刷新 updatedAt。
+  // 直接 prisma.agentConversation.update 会漏掉 updatedAt，
+  // 因为该字段没有 @updatedAt、也没有库级默认值。
+  await updateConversationStatus({
+    conversationId: run.conversationId,
+    status: "idle",
+    ...(conversation?.title === "新任务" ? { title: triggerMessage.content.slice(0, 20) } : {}),
   });
 }
 
