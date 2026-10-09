@@ -6,7 +6,6 @@
  */
 import type { AgentConversation, AgentEvent, AgentMessage, AgentRun, AgentToolCall, Prisma } from "@prisma/client";
 import { prisma } from "../core/db";
-import { notFound } from "../core/http-error";
 import { shanghaiNow } from "../core/time";
 
 /** 会话标题最大长度 */
@@ -292,11 +291,18 @@ export async function listMessages(
 
 // ---------- P1-A：接口层查询 ----------
 
-/** 校验会话归属：不存在或不属于该用户一律 404（不泄露「存在但不是你的」） */
-export async function findConversationForUser(conversationId: number, userId: number): Promise<AgentConversation> {
-  const conversation = await prisma.agentConversation.findFirst({ where: { id: conversationId, userId } });
-  if (!conversation) throw notFound("会话不存在");
-  return conversation;
+/**
+ * 查会话归属：查不到（不存在或不属于该用户）返回 null。
+ *
+ * **不在这里抛 HTTP 错误**：本文件要被 worker 与路由两侧 import，
+ * 而 `http-error` 依赖 `next/server`。服务层只表达「查不到」，状态码由路由层决定
+ * —— 路由层一律把 null 转成 404（不泄露「存在但不是你的」）。
+ */
+export async function findConversationForUser(
+  conversationId: number,
+  userId: number,
+): Promise<AgentConversation | null> {
+  return prisma.agentConversation.findFirst({ where: { id: conversationId, userId } });
 }
 
 /**
@@ -400,8 +406,14 @@ export async function findToolCallSummaries(toolCallIds: string[]): Promise<Map<
 
 // ---------- P1-A：取消与删除 ----------
 
-/** 取消 Run 的结果：冲突时带上给用户看的原因（路由把它转成 409） */
-export type CancelRunResult = { outcome: "cancelled"; run: AgentRun } | { outcome: "conflict"; reason: string };
+/**
+ * 取消 Run 的结果：三种结局都由路由层翻译成状态码
+ * （cancelled → 200 / conflict → 409 / not_found → 404）。
+ */
+export type CancelRunResult =
+  | { outcome: "cancelled"; run: AgentRun }
+  | { outcome: "conflict"; reason: string }
+  | { outcome: "not_found" };
 
 /**
  * 取消一个 Run —— **仅 pending**（P1 设计稿 D19）。
@@ -412,7 +424,7 @@ export type CancelRunResult = { outcome: "cancelled"; run: AgentRun } | { outcom
  */
 export async function cancelPendingRun(runId: number, userId: number): Promise<CancelRunResult> {
   const run = await prisma.agentRun.findFirst({ where: { id: runId, userId } });
-  if (!run) throw notFound("Run 不存在");
+  if (!run) return { outcome: "not_found" };
   if (isRunTerminal(run.status)) {
     return { outcome: "conflict", reason: `Run 已是终态（${run.status}），无需取消` };
   }
@@ -441,14 +453,15 @@ export async function cancelPendingRun(runId: number, userId: number): Promise<C
 }
 
 /**
- * 删除会话及其全部关联行。
+ * 删除会话及其全部关联行；会话不存在或不属于该用户时返回 false（路由层据此转 404）。
  *
  * Prisma 的级联**只覆盖声明了关系的表**（agent_messages / agent_runs）。
  * agent_events / agent_tool_calls / tasks 与 Run 之间只有裸整数外键、没有关系声明，
  * 不显式删就会留下孤儿行 —— 事件与工具调用的孤儿尤其难查（它们没有可关联的会话）。
  */
-export async function deleteConversationDeep(conversationId: number, userId: number): Promise<void> {
-  await findConversationForUser(conversationId, userId);
+export async function deleteConversationDeep(conversationId: number, userId: number): Promise<boolean> {
+  const conversation = await findConversationForUser(conversationId, userId);
+  if (!conversation) return false;
   const runs = await prisma.agentRun.findMany({ where: { conversationId }, select: { id: true, taskId: true } });
   const runIds = runs.map((run) => run.id);
   const taskIds = runs.map((run) => run.taskId);
@@ -460,4 +473,5 @@ export async function deleteConversationDeep(conversationId: number, userId: num
     // 放在最后：agent_messages / agent_runs 由外键 onDelete: Cascade 随会话一起清
     prisma.agentConversation.delete({ where: { id: conversationId } }),
   ]);
+  return true;
 }
