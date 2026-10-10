@@ -3,8 +3,13 @@
  * 用户 / 助手气泡
  *
  * created_at 是「朴素上海墙钟」字符串：直接切片 HH:mm 展示，不要 new Date() 解析。
+ * 助手文本按 markdown 渲染（react-markdown + remark-gfm：表格/列表/代码块等），
+ * 用户消息保持纯文本 —— 用户输入里的 `#` / `*` 不该被当语法解析。
+ * 样式在 globals.css 的 `.agent-markdown`（项目既有的全局样式落点）。
  */
 import { Typography } from "antd";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const { Text } = Typography;
 
@@ -28,11 +33,16 @@ export function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
             padding: "8px 12px",
             fontSize: 13,
             lineHeight: 1.7,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            ...(isUser ? { whiteSpace: "pre-wrap", wordBreak: "break-word" } : {}),
           }}
         >
-          {text}
+          {isUser ? (
+            text
+          ) : (
+            <div className="agent-markdown">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            </div>
+          )}
         </div>
         <Text
           type="secondary"
