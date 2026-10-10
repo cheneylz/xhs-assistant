@@ -174,7 +174,18 @@ async function main(): Promise<void> {
     });
     assert(draftArtifact !== undefined, `没有 kind=draft、id=${draft.id} 的工件事件（右栏不会出现工件卡）`);
 
-    // 护栏：agent.md 要求改写前说明将修改哪篇（设计稿 §八 风险 5）
+    // 护栏：agent.md 要求改写**前**说明将修改哪篇（设计稿 §八 风险 5）。
+    // 「前」必须用事件时序钉死 —— 只扫全部助手文本的话，模型在收尾总结里才提到 #id 也会通过（Task 9 审查发现）
+    const startEvents = await prisma.agentEvent.findMany({
+      where: { runId: second.runId, type: "tool_execution_start" },
+      orderBy: { id: "asc" },
+    });
+    // 用 toolCallId 关联（与 agent_tool_calls 行同一把键），不依赖 start 载荷里是否带 toolName
+    const rewriteStart = startEvents.find((event) => {
+      const payload = event.payload as { toolCallId?: string };
+      return String(payload.toolCallId ?? "") === rewriteRow.toolCallId;
+    });
+    assert(rewriteStart !== undefined, "没有 content_rewrite 的 tool_execution_start 事件（无法验证「改写前已说明」的时序）");
     const messageEnds = await prisma.agentEvent.findMany({
       where: { runId: second.runId, type: "message_end" },
       orderBy: { id: "asc" },
@@ -182,9 +193,13 @@ async function main(): Promise<void> {
     const announced = messageEnds.some((event) => {
       const payload = event.payload as { role?: string; text?: string };
       const text = typeof payload.text === "string" ? payload.text : "";
-      return payload.role === "assistant" && (text.includes(`#${draft.id}`) || text.includes(draft.title));
+      return (
+        event.id < rewriteStart.id &&
+        payload.role === "assistant" &&
+        (text.includes(`#${draft.id}`) || text.includes(draft.title))
+      );
     });
-    assert(announced, `改写前的助手文本没有说明将修改哪篇草稿（未出现 #${draft.id} 或标题「${draft.title}」）`);
+    assert(announced, `改写**前**的助手文本没有说明将修改哪篇草稿（未出现 #${draft.id} 或标题「${draft.title}」）`);
     console.log(
       `【2/2】去 AI 味改写 通过：草稿 ${draft.id} 正文 ${draftBody.length} → ${rewritten.body.length} 字，工件事件已落，改写前已说明`,
     );
