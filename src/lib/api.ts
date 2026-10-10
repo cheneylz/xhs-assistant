@@ -1297,3 +1297,13 @@ export async function fetchAgentArtifacts(conversationId: number): Promise<Agent
   const response = await http.get<{ items: AgentArtifactItem[] }>(`/agent/conversations/${conversationId}/artifacts`);
   return response.data.items;
 }
+
+/**
+ * DELETE /api/agent/conversations/[id] 删除会话（接口 8）。
+ * 执行中 → 409（服务端文案「会话正在执行中，请先取消或等待任务结束再删除」，由拦截器提示）；
+ * 他人 / 不存在 → 404。服务端级联深删消息 / Run / 事件 / 工具调用 / 工件。
+ */
+export async function deleteAgentConversation(conversationId: number): Promise<{ deleted: boolean; id: number }> {
+  const response = await http.delete<{ deleted: boolean; id: number }>(`/agent/conversations/${conversationId}`);
+  return response.data;
+}

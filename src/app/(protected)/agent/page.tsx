@@ -26,6 +26,7 @@ import { agentReducer, createInitialState, upsertConversation } from "@/lib/agen
 import {
   cancelAgentRun,
   createAgentConversation,
+  deleteAgentConversation,
   fetchAgentArtifacts,
   fetchAgentConversation,
   fetchAgentConversations,
@@ -51,6 +52,8 @@ export default function AgentWorkspacePage() {
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  /** 正在删除的会话 id（传给左栏，禁用该行按钮防重复提交） */
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   /** 已应用过快照、可以订阅 SSE 的会话 id（null = 同步中，不连接） */
   const [syncedId, setSyncedId] = useState<number | null>(null);
@@ -219,6 +222,37 @@ export default function AgentWorkspacePage() {
     }
   }, [handleSelect]);
 
+  /**
+   * 删除会话（P1-D）：成功即把该行从列表移除；若删的是**当前选中**会话，
+   * 把工作台清回空态（syncedId=null 会随 effect 依赖断开 SSE）。
+   * 失败（409 执行中 / 404 已被删）由拦截器 toast —— 之后 refreshList 对齐
+   * 「执行中」标记与行集合（左栏标记来自列表接口快照，可能滞后）。
+   */
+  const handleDelete = useCallback(
+    async (id: number) => {
+      setDeletingId(id);
+      try {
+        await deleteAgentConversation(id);
+        setConversations((items) => items.filter((item) => item.id !== id));
+        // 删的正是当前选中的会话：清空工作台（用户删除时可能在途切走，故用 ref 比对）
+        if (selectionRef.current === id) {
+          selectionRef.current = null;
+          setSelectedId(null);
+          setSyncedId(null);
+          dispatch({ type: "clear" });
+          setDraft("");
+        }
+        message.success("会话已删除");
+      } catch {
+        // 拦截器已提示；刷新列表让「执行中」标记等状态与库对齐
+        void refreshList();
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [refreshList],
+  );
+
   const handleSend = useCallback(async () => {
     const id = selectionRef.current;
     const content = draft.trim();
@@ -288,8 +322,10 @@ export default function AgentWorkspacePage() {
         selectedId={selectedId}
         loading={listLoading}
         creating={creating}
+        deletingId={deletingId}
         onSelect={handleSelect}
         onCreate={() => void handleCreate()}
+        onDelete={handleDelete}
       />
 
       <div

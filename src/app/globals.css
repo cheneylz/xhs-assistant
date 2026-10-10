@@ -184,3 +184,13 @@ body {
 .agent-markdown a {
   color: #386bff;
 }
+
+/* 会话行的删除入口：仅悬停该行（或键盘聚焦到行内按钮）时出现。
+   用 visibility 而非 opacity —— 后者不可见但仍可点击，会留下「看不见的删除按钮」 */
+.agent-conv-delete {
+  visibility: hidden;
+}
+.agent-conv-row:hover .agent-conv-delete,
+.agent-conv-row:focus-within .agent-conv-delete {
+  visibility: visible;
+}
