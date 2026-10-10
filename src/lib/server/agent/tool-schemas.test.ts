@@ -86,6 +86,14 @@ describe("TOOL_SCHEMAS（工具入参 schema）", () => {
     expect(Value.Check(schema, { limit: 0 })).toBe(false);
   });
 
+  it("文本类入参带长度上限（与路由侧 zod 一致，防超大请求体）", () => {
+    expect(Value.Check(getToolSchema("content_rewrite"), { draft_id: 1, instruction: "x".repeat(801) })).toBe(false);
+    expect(Value.Check(getToolSchema("content_rewrite"), { draft_id: 1, instruction: "x".repeat(800) })).toBe(true);
+    expect(Value.Check(getToolSchema("content_titles"), { title: "x".repeat(301) })).toBe(false);
+    expect(Value.Check(getToolSchema("content_titles"), { title: "T", body: "x".repeat(6001) })).toBe(false);
+    expect(Value.Check(getToolSchema("content_tags"), { title: "T", body: "x".repeat(6000) })).toBe(true);
+  });
+
   it("count / limit 的 default 与路由侧默认值一致，且全部属性都有 description（模型靠它选参数）", () => {
     type JsonSchemaNode = { properties?: Record<string, { default?: unknown; description?: string }> };
     const defaults: Array<[string, string, unknown]> = [

@@ -44,7 +44,7 @@ export const TOOL_SCHEMAS: Record<string, TSchema> = {
 
   "content_rewrite": Type.Object({
     draft_id: Type.Integer({ minimum: 1, description: "待改写的草稿 ID，必填" }),
-    instruction: Type.Optional(Type.String({ description: "额外改写要求，如「更口语化、加 emoji」" })),
+    instruction: Type.Optional(Type.String({ maxLength: 800, description: "额外改写要求，如「更口语化、加 emoji」" })),
     intensity: Type.Optional(
       Type.Union([Type.Literal("light"), Type.Literal("medium"), Type.Literal("deep")], {
         description: "改写强度，默认 medium",
@@ -53,16 +53,16 @@ export const TOOL_SCHEMAS: Record<string, TSchema> = {
   }),
 
   "content_titles": Type.Object({
-    title: Type.String({ minLength: 1, description: "原标题，必填" }),
-    body: Type.Optional(Type.String({ description: "正文内容，越完整生成的标题越贴合" })),
+    title: Type.String({ minLength: 1, maxLength: 300, description: "原标题，必填" }),
+    body: Type.Optional(Type.String({ maxLength: 6000, description: "正文内容，越完整生成的标题越贴合" })),
     count: Type.Optional(
       Type.Integer({ minimum: 1, maximum: 10, default: 5, description: "标题数量，默认 5，最多 10" }),
     ),
   }),
 
   "content_tags": Type.Object({
-    title: Type.String({ minLength: 1, description: "标题，必填" }),
-    body: Type.Optional(Type.String({ description: "正文内容" })),
+    title: Type.String({ minLength: 1, maxLength: 300, description: "标题，必填" }),
+    body: Type.Optional(Type.String({ maxLength: 6000, description: "正文内容" })),
     count: Type.Optional(
       Type.Integer({ minimum: 1, maximum: 20, default: 8, description: "标签数量，默认 8，最多 20" }),
     ),
