@@ -35,7 +35,7 @@ npx tsc --noEmit        # 期望无输出
 | Task 4 API 封装（6 个函数） | ✅ 已验收 | `10f4bc9`（跟进项并入 Task 5） |
 | Task 5 use-agent-events（SSE + 重连） | ✅ 已验收 | `a4efbd5`（含 Task 4 审查跟进） |
 | Task 5 补丁（质量审查修复） | ✅ 已验收 | `3878c73` |
-| Task 6 conversation-list | ⬜ 未开始 | |
+| Task 6 conversation-list | ✅ 已验收 | `ea5df90`（跟进项并入 Task 7） |
 | Task 7 message-stream + message-bubble | ⬜ 未开始 | |
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
@@ -2390,8 +2390,50 @@ git commit -m "feat(agent-ui): 左栏会话列表组件（新建 / 选中 / 执�
 **Files:**
 - Create: `src/components/agent/message-bubble.tsx`
 - Create: `src/components/agent/message-stream.tsx`
+- Modify: `src/components/agent/conversation-list.tsx`（Step 0 的 Task 6 审查跟进）
 
 **定位**：自动滚动 + 「有新消息」（设计稿 §5.4）。滚动判定用 **ref 而非 state 闭包**：effect 只在内容变化时执行，读 state 会拿到旧值。
+
+- [ ] **Step 0: 先落地 Task 6 质量审查的 2 项跟进（`conversation-list.tsx`，与 Task 7 同一次提交）**
+
+**(1) 截断的标题加原生 title 属性**（antd 的纯布尔 `ellipsis` 走 CSS-only 路径、不挂 tooltip；标题上限 40 字必然截断，用户悬停也读不全）。给列表项的标题 `Text` 加一个属性：
+
+```tsx
+                <Text
+                  ellipsis
+                  title={item.title}
+                  style={{ flex: 1, fontSize: 13, fontWeight: selected ? 600 : 400, minWidth: 0 }}
+                >
+                  {item.title}
+                </Text>
+```
+
+**(2) 首次加载显示 Spin**（面板正文在加载期间全白；项目其它列表页惯例是 `<Spin />`）。把：
+
+```tsx
+        {!loading && items.length === 0 && (
+          <div style={{ paddingTop: 32 }}>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有会话" />
+          </div>
+        )}
+```
+
+换成：
+
+```tsx
+        {loading && items.length === 0 && (
+          <div style={{ paddingTop: 32, textAlign: "center" }}>
+            <Spin size="small" />
+          </div>
+        )}
+        {!loading && items.length === 0 && (
+          <div style={{ paddingTop: 32 }}>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有会话" />
+          </div>
+        )}
+```
+
+并把 antd 的 import 改成 `import { Badge, Button, Empty, Spin, Typography } from "antd";`。
 
 - [ ] **Step 1: 实现 `message-bubble.tsx`**
 
@@ -2575,8 +2617,8 @@ npx tsc --noEmit      # 此时 message-stream 依赖的 tool-call-card / thinkin
 > 若报 `Cannot find module './tool-call-card'`：**预期**，Task 8 会补上；先提交，最后一起看 tsc。
 
 ```bash
-git add src/components/agent/message-bubble.tsx src/components/agent/message-stream.tsx
-git commit -m "feat(agent-ui): 中栏消息流与气泡（自动滚动 + 有新消息）"
+git add src/components/agent/message-bubble.tsx src/components/agent/message-stream.tsx src/components/agent/conversation-list.tsx
+git commit -m "feat(agent-ui): 中栏消息流与气泡（含 Task 6 审查跟进：标题 tooltip 与加载态）"
 ```
 
 ---
@@ -3002,8 +3044,11 @@ export default function AgentWorkspacePage() {
       dispatch({ type: "clear" });
       setDraft("");
       void loadDetail(id);
+      // 顺手刷列表：会话行的「执行中」标记只来自列表接口，切走期间别的会话跑完了不会自动更新 ——
+      // 不刷的话「点回旧会话」会出现「中栏说空闲、左栏还在转」的自相矛盾（Task 6 质量审查发现）
+      void refreshList();
     },
-    [loadDetail],
+    [loadDetail, refreshList],
   );
 
   // 首屏：拉会话列表，自动选中最近一个
@@ -3426,6 +3471,8 @@ Expected：无 404、无白屏、控制台无报错。
 
 Expected：过程实时可见；工具卡摘要形如「已保存草稿 #N：《…》」；会话标题在首轮后变为从首条消息派生的标题。
 
+> 两个**不是 bug** 的预期现象（别当缺陷上报）：① 重复点击已选中的会话会让中栏短暂清空再填回（`handleSelect` 有意无条件重载快照）；② 「新建」在途时点列表项，选中会被创建完成后的新会话覆盖（纯外观问题）。
+
 - [ ] **Step 3: §7.2 第 3 条 —— 工具卡的 4 种状态**
 
 - 运行中 / 成功：上一步已经看到。
@@ -3501,6 +3548,10 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
    - 接口 6（工件列表）只返回 `{ items }`，没有截断标记 —— 右栏手动刷新后，截断提示仍是上次快照的（today 无 UI 依赖这条，登记备查）
    - 会话过期不重定向：SSE 的 401 在 refresh 失败后停流（fail-safe），而 `clearAuthTokens()` 不通知 `use-auth`，路由守卫不会跳登录 —— 用户可见行为是「工作台不再实时更新、其余功能照旧」，恢复手段是手动刷新页面（Task 5 审查发现；根治需让 `clearAuthTokens` 通知 `use-auth`，属跨页面的独立改进）
+   - 左栏会话行的「执行中」标记只随列表接口更新（挂载 / 新建 / 发送 / 切会话 / 当前会话结束）；**非当前会话**在后台跑完时，其行标记会滞留到用户切到它为止（切会话已会顺手刷列表，故不会出现中栏与左栏矛盾）
+   - 全站列表项都不可键盘访问（`div onClick`，无 `role`/`tabIndex`/`onKeyDown`，与既有页面一致）—— 本组件的会话行同此，登记为全站 a11y 债，建议独立改进项
+   - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
+   - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
