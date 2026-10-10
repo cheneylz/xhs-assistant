@@ -277,7 +277,7 @@ describe("content_rewrite", () => {
     expect(result).toEqual({ draft_id: 12, title: "露营装备清单", length: 3 });
   });
 
-  it("intensity 非法或缺省时回退 medium（模型可能给任意字符串）", async () => {
+  it("intensity 非法或缺省时回退 medium（Pi 边界已做枚举校验，回退防的是工作流等非 Pi 调用方）", async () => {
     mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "B" });
     mocks.draftUpdate.mockResolvedValue({ id: 12, title: "T", body: "N" });
     const rewriteNote = vi.fn(async () => "N");
@@ -316,5 +316,66 @@ describe("content_rewrite", () => {
     const result = await executeSkill("content_rewrite", { draft_id: 12 }, makeModelContext({ rewriteNote }));
     expect(mocks.draftUpdate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ draft_id: 12, length: 0, reason: "模型返回空内容，原文未改动" });
+  });
+
+  it("intensity 的 light 档原样透传，draft_id 的典型幻觉值落到可读错误", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "B" });
+    mocks.draftUpdate.mockResolvedValue({ id: 12, title: "T", body: "N" });
+    const rewriteNote = vi.fn(async () => "N");
+    await executeSkill("content_rewrite", { draft_id: 12, intensity: "light" }, makeModelContext({ rewriteNote }));
+    expect(rewriteNote).toHaveBeenLastCalledWith(expect.objectContaining({ intensity: "light" }));
+    // 0 是模型最典型的幻觉值：falsy → 「缺少草稿」而不是去查 id=0
+    await expect(executeSkill("content_rewrite", { draft_id: 0 }, makeModelContext({}))).rejects.toThrow(
+      "缺少草稿（draft_id）参数",
+    );
+    // 12.7：Prisma 对非整数 id 返回 null（不抛校验错）→ 「草稿 12.7 不存在」
+    mocks.draftFindFirst.mockResolvedValue(null);
+    await expect(executeSkill("content_rewrite", { draft_id: 12.7 }, makeModelContext({}))).rejects.toThrow(
+      "草稿 12.7 不存在",
+    );
+  });
+
+  it("instruction 非字符串时透传空串（不污染提示词）", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "B" });
+    mocks.draftUpdate.mockResolvedValue({ id: 12, title: "T", body: "N" });
+    const rewriteNote = vi.fn(async () => "N");
+    await executeSkill("content_rewrite", { draft_id: 12, instruction: 123 }, makeModelContext({ rewriteNote }));
+    expect(rewriteNote).toHaveBeenLastCalledWith(expect.objectContaining({ instruction: "" }));
+  });
+});
+
+describe("analytics_reports", () => {
+  it("正常读取：返回 reports 与 count，limit 钳制在 1..20", async () => {
+    const reports = [{ id: 1, keyword: "露营" }, { id: 2, keyword: "收纳" }];
+    mocks.listExplosionReports.mockResolvedValue(reports);
+    const result = await executeSkill("analytics_reports", { limit: 999 }, makeContext());
+    expect(mocks.listExplosionReports).toHaveBeenCalledWith(7, 20);
+    expect(result.count).toBe(2);
+    expect(result.reports).toEqual(reports);
+  });
+
+  it("空结果表明原因（用户知道去哪里产出报告）", async () => {
+    mocks.listExplosionReports.mockResolvedValue([]);
+    const result = await executeSkill("analytics_reports", {}, makeContext());
+    expect(mocks.listExplosionReports).toHaveBeenCalledWith(7, 5);
+    expect(result.count).toBe(0);
+    expect(result.reason).toBe("还没有爆款拆解报告，可先在「爆款拆解」页生成");
+  });
+});
+
+describe("kb_get", () => {
+  it("正常读取：返回 context 与 length", async () => {
+    mocks.buildKbContext.mockResolvedValue("【账号定位】露营装备测评");
+    const result = await executeSkill("kb_get", {}, makeContext());
+    expect(mocks.buildKbContext).toHaveBeenCalledWith(7);
+    expect(result.length).toBe("【账号定位】露营装备测评".length);
+    expect(result.context).toBe("【账号定位】露营装备测评");
+  });
+
+  it("知识库为空时 length=0 并带出 reason", async () => {
+    mocks.buildKbContext.mockResolvedValue("");
+    const result = await executeSkill("kb_get", {}, makeContext());
+    expect(result.length).toBe(0);
+    expect(result.reason).toBe("知识库尚未配置，可先在「知识库」页填写账号定位与口吻");
   });
 });

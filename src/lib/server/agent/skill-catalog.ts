@@ -10,6 +10,7 @@ import { extractJsonObject } from "../core/json-extract";
 import { shanghaiNow } from "../core/time";
 import type { ModelConfigLike, OpenAICompatibleTextClient } from "../services/ai-service";
 import { buildKbContext } from "../services/knowledge-base-service";
+import { listExplosionReports } from "../services/exploration-service";
 import { getNoteDetail, listNoteComments, searchNotes } from "../services/note-service";
 import { createReviewJob } from "../services/review-service";
 import { generateSuggestions } from "../services/suggestion-service";
@@ -545,15 +546,6 @@ export interface SkillContext {
   apiKey: string;
 }
 
-/** C 块过渡期护栏：目录已登记但执行分支未实现的 skillKey（Task 7 落完最后一个分支后整块删除） */
-const INTERIM_UNIMPLEMENTED_SKILLS = new Set([
-  "content_rewrite",
-  "content_titles",
-  "content_tags",
-  "analytics_reports",
-  "kb_get",
-]);
-
 /** 执行单个技能（映射到现有服务函数） */
 export async function executeSkill(skillKey: string, params: Record<string, unknown>, context: SkillContext): Promise<Record<string, unknown>> {
   const { userId, textClient, modelConfig, apiKey } = context;
@@ -744,7 +736,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
       if (!draft) throw new Error(`草稿 ${draftId} 不存在`);
-      // 强度只认三档，非法值回退 medium（与路由侧 zod 枚举同口径）
+      // 强度只认三档，非法值回退 medium（与路由侧 zod 枚举同口径；Pi 边界另有枚举校验，此回退防的是工作流等非 Pi 调用方）
       const intensity = params.intensity === "light" || params.intensity === "deep" ? params.intensity : "medium";
       const body = await textClient.rewriteNote({
         modelConfig,
@@ -763,11 +755,22 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       const updated = await prisma.aiDraft.update({ where: { id: draft.id }, data: { body } });
       return { draft_id: updated.id, title: updated.title, length: body.length };
     }
-    default: {
-      // 过渡期护栏：注册表种子（ensureUserSkills）会让这些 key 落进 LLM 兜底、产出假结果 —— 宁可响亮失败
-      if (INTERIM_UNIMPLEMENTED_SKILLS.has(skillKey)) {
-        throw new Error(`技能 ${skillKey} 的执行分支尚未实现（C 块过渡期，请勿使用运行中的 worker 验收）`);
+    case "analytics_reports": {
+      const limit = Math.max(1, Math.min(Number(params.limit) || 5, 20));
+      const reports = await listExplosionReports(userId, limit);
+      if (reports.length === 0) {
+        return { reports, count: 0, reason: "还没有爆款拆解报告，可先在「爆款拆解」页生成" };
       }
+      return { reports, count: reports.length };
+    }
+    case "kb_get": {
+      const context = await buildKbContext(userId);
+      if (!context) {
+        return { context: "", length: 0, reason: "知识库尚未配置，可先在「知识库」页填写账号定位与口吻" };
+      }
+      return { context, length: context.length };
+    }
+    default: {
       // 自定义技能：以注册表维护的 instructions（SKILL.md 风格）作为 system prompt，由 LLM 驱动执行
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法执行自定义技能");
       const custom = await prisma.skillRegistry.findFirst({ where: { userId, skillKey, enabled: true } });
