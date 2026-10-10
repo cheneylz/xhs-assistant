@@ -10,6 +10,7 @@ import { extractJsonObject } from "../core/json-extract";
 import { shanghaiNow } from "../core/time";
 import type { ModelConfigLike, OpenAICompatibleTextClient } from "../services/ai-service";
 import { buildKbContext } from "../services/knowledge-base-service";
+import { getNoteDetail, listNoteComments, searchNotes } from "../services/note-service";
 import { createReviewJob } from "../services/review-service";
 import { generateSuggestions } from "../services/suggestion-service";
 import { collectHotTopicsForUser } from "../services/hot-topic-service";
@@ -647,6 +648,54 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       const { recommendSchedules } = await import("../services/schedule-service");
       const result = await recommendSchedules({ userId, platformAccountId: accountId, days: 3 });
       return { slots: result.slots, reason: result.reason };
+    }
+    case "library_search_notes": {
+      const keyword = typeof params.keyword === "string" ? params.keyword.trim() : "";
+      const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+      const tagId = params.tag_id === undefined ? undefined : Number(params.tag_id);
+      if (tagId !== undefined && !Number.isFinite(tagId)) throw new Error("tag_id 必须是数字");
+      const result = await searchNotes(userId, { keyword: keyword || undefined, tagId });
+      if (result.outcome === "tag_not_found") throw new Error(`标签 ${tagId} 不存在或不属于当前用户`);
+      // 只回模型需要的字段：完整序列化里的 raw_json 体积大且对模型无用
+      const items = result.items.slice(0, limit).map((item) => ({
+        id: item.id,
+        title: item.title,
+        author_name: item.author_name,
+        platform: item.platform,
+        created_at: item.created_at,
+        content_excerpt: String(item.content ?? "").slice(0, 120),
+      }));
+      if (items.length === 0) {
+        // 空结果的 reason 必须带出来（工具卡默认只显示摘要一行，见 handoff §二.6）
+        return { total: 0, count: 0, items, reason: keyword ? `没有匹配「${keyword}」的笔记` : "内容库还没有笔记" };
+      }
+      return { total: result.items.length, count: items.length, items };
+    }
+    case "library_note_detail": {
+      const noteId = Number(params.note_id);
+      if (!noteId) throw new Error("缺少笔记（note_id）参数");
+      const commentLimit = Math.max(1, Math.min(Number(params.comment_limit) || 20, 200));
+      const detail = await getNoteDetail(userId, noteId);
+      if (!detail) throw new Error(`笔记 ${noteId} 不存在`);
+      const comments = await listNoteComments(userId, noteId);
+      if (comments.outcome === "not_found") throw new Error(`笔记 ${noteId} 不存在`);
+      const content = String(detail.content ?? "");
+      return {
+        note_id: detail.id,
+        note_title: detail.title,
+        author_name: detail.author_name,
+        platform: detail.platform,
+        created_at: detail.created_at,
+        tags: detail.tags,
+        content: content.slice(0, 2000),
+        content_truncated: content.length > 2000,
+        comment_total: comments.items.length,
+        comments: comments.items.slice(0, commentLimit).map((comment) => ({
+          user_name: comment.user_name,
+          content: String(comment.content ?? "").slice(0, 200),
+          like_count: comment.like_count,
+        })),
+      };
     }
     default: {
       // 过渡期护栏：注册表种子（ensureUserSkills）会让这些 key 落进 LLM 兜底、产出假结果 —— 宁可响亮失败
