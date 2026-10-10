@@ -31,7 +31,7 @@ import {
   fetchAgentConversations,
   sendAgentMessage,
 } from "@/lib/api";
-import type { AgentConversation } from "@/types";
+import type { AgentConversation, AgentConversationDetail } from "@/types";
 
 const { Text } = Typography;
 
@@ -76,6 +76,19 @@ export default function AgentWorkspacePage() {
     }
   }, []);
 
+  /**
+   * 应用快照：三件事必须一起做（见文件头的不变量）——
+   *   1) 整体替换状态（snapshot）
+   *   2) 重连 SSE 从快照水位重放（bump streamKey）
+   *   3) 武装订阅（syncedId）—— 漏了这步，首屏失败后 resync 成功了也永远不订阅
+   *      （Task 10 质量审查 I1：页面会永久失去直播通道与 5s 兜底）
+   */
+  const applySnapshot = useCallback((id: number, detail: AgentConversationDetail) => {
+    dispatch({ type: "snapshot", detail });
+    setStreamKey((key) => key + 1);
+    setSyncedId(id);
+  }, []);
+
   /** 重同步：拉首屏快照整体替换，然后重连 SSE 从快照水位重放（见文件头） */
   const resync = useCallback(async () => {
     const id = selectionRef.current;
@@ -83,26 +96,27 @@ export default function AgentWorkspacePage() {
     try {
       const detail = await fetchAgentConversation(id);
       if (selectionRef.current !== id) return; // 已切到别的会话，丢弃过期响应
-      dispatch({ type: "snapshot", detail });
-      setStreamKey((key) => key + 1);
+      applySnapshot(id, detail);
     } catch {
       // 静默：下一次交互会再同步
     }
-  }, []);
+  }, [applySnapshot]);
 
-  const loadDetail = useCallback(async (id: number) => {
-    setDetailLoading(true);
-    try {
-      const detail = await fetchAgentConversation(id);
-      if (selectionRef.current !== id) return;
-      dispatch({ type: "snapshot", detail });
-      setSyncedId(id);
-    } catch {
-      if (selectionRef.current === id) setSyncedId(null);
-    } finally {
-      if (selectionRef.current === id) setDetailLoading(false);
-    }
-  }, []);
+  const loadDetail = useCallback(
+    async (id: number) => {
+      setDetailLoading(true);
+      try {
+        const detail = await fetchAgentConversation(id);
+        if (selectionRef.current !== id) return;
+        applySnapshot(id, detail);
+      } catch {
+        // 不在这里卸 syncedId（原因见上）；handleSelect 已经把订阅关掉过了
+      } finally {
+        if (selectionRef.current === id) setDetailLoading(false);
+      }
+    },
+    [applySnapshot],
+  );
 
   const handleSelect = useCallback(
     (id: number) => {
@@ -120,6 +134,8 @@ export default function AgentWorkspacePage() {
   );
 
   // 首屏：拉会话列表，自动选中最近一个
+  // 首屏只跑一次：依赖里的 handleSelect 必须是稳定引用（空依赖 useCallback）——
+  // 任何为 loadDetail 加依赖的改动都会让首屏 effect 重跑，把用户强制拉回列表第一项（审查 M2）
   useEffect(() => {
     void (async () => {
       try {
@@ -160,7 +176,8 @@ export default function AgentWorkspacePage() {
    * 毫秒级窗口返回，水位已越过 agent_end，重连补不回结束信号，UI 会卡在「执行中」
    * （输入框禁用、也没有取消按钮）。定时读一次服务端 runs 把状态收敛。
    * 只发 runStatus 动作（不动时间线 / 水位 / 工件），因此不需要重连 SSE。
-   * 执行中每 5s 一个轻量 GET，空闲即停（与设计稿「空闲降速」的取向一致）。
+   * 这一拍拉的是**完整首屏契约**（接口 3，只为读 runs）——执行中每 5s 一次是可接受的代价，
+   * 真嫌重再考虑给接口 3 加字段过滤（登记在交接文档）。
    *
    * 已知无害竞态（登记在交接文档，不做机制兜底）：一次在途的请求若在新一轮
    * 「发送 → runCreated」之后才落地，会把 executing 短暂抹回 false（新 Run 不在
@@ -205,6 +222,8 @@ export default function AgentWorkspacePage() {
     setSending(true);
     try {
       const result = await sendAgentMessage(id, content);
+      // 已切走：A 的消息与执行中状态不能写进 B 的时间线，更不能清掉 B 的草稿（Task 10 审查 C1）
+      if (selectionRef.current !== id) return;
       dispatch({
         type: "runCreated",
         conversation: result.conversation,
@@ -225,9 +244,12 @@ export default function AgentWorkspacePage() {
 
   const handleCancel = useCallback(async () => {
     if (pendingRunId === null) return;
+    const id = selectionRef.current;
     setCancelling(true);
     try {
       await cancelAgentRun(pendingRunId);
+      // 已切走：A 的取消结果不能改写 B 的执行中状态（Task 10 审查 I3）
+      if (selectionRef.current !== id) return;
       dispatch({ type: "runCancelled" });
       message.success("已取消等待中的任务");
     } catch {
@@ -243,7 +265,10 @@ export default function AgentWorkspacePage() {
     if (id === null) return;
     setRefreshingArtifacts(true);
     try {
-      dispatch({ type: "artifacts", items: await fetchAgentArtifacts(id) });
+      const items = await fetchAgentArtifacts(id);
+      // 已切走：A 的工件不能写进 B 的右栏（Task 10 审查 I2）
+      if (selectionRef.current !== id) return;
+      dispatch({ type: "artifacts", items });
     } catch {
       // 拦截器已提示
     } finally {
@@ -309,7 +334,15 @@ export default function AgentWorkspacePage() {
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
+                  // 输入法合成态里的 Enter 是「确认候选词」，不是提交 —— 误发的代价是让 Agent
+                  // 拿半句话去执行工具（Task 10 审查 C2）。keyCode 229 是部分输入法在
+                  // 合成期的另一种上报方式，一并挡掉。
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing &&
+                    event.nativeEvent.keyCode !== 229
+                  ) {
                     event.preventDefault();
                     void handleSend();
                   }
