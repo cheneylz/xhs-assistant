@@ -36,8 +36,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 5 use-agent-events（SSE + 重连） | ✅ 已验收 | `a4efbd5`（含 Task 4 审查跟进） |
 | Task 5 补丁（质量审查修复） | ✅ 已验收 | `3878c73` |
 | Task 6 conversation-list | ✅ 已验收 | `ea5df90`（跟进项并入 Task 7） |
-| Task 7 message-stream + message-bubble | 🔶 实现完成，待补丁复审 | `6b33cfb`（含 Task 6 审查跟进） |
-| Task 7 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 7 message-stream + message-bubble | ✅ 已验收 | `6b33cfb`（含 Task 6 审查跟进） |
+| Task 7 补丁（质量审查修复） | ✅ 已验收 | `9faaf01` |
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
@@ -3691,7 +3691,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 全站列表项都不可键盘访问（`div onClick`，无 `role`/`tabIndex`/`onKeyDown`，与既有页面一致）—— 本组件的会话行同此，登记为全站 a11y 债，建议独立改进项
    - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
-   - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）
+   - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
