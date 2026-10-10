@@ -705,6 +705,39 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
         })),
       };
     }
+    case "content_titles": {
+      if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成标题");
+      const title = String(params.title ?? "").trim();
+      if (!title) throw new Error("缺少标题（title）参数");
+      const count = Math.max(1, Math.min(Number(params.count) || 5, 10));
+      const titles = await textClient.generateTitles({
+        modelConfig,
+        apiKey,
+        onUsage: makeUsageLogger(userId, modelConfig.modelName),
+        title,
+        body: typeof params.body === "string" ? params.body : "",
+        count,
+      });
+      // 空结果带 reason（工具卡摘要会显示「生成 0 个标题（模型未返回可用标题）」）
+      if (titles.length === 0) return { titles, count: 0, reason: "模型未返回可用标题" };
+      return { titles, count: titles.length };
+    }
+    case "content_tags": {
+      if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成标签");
+      const title = String(params.title ?? "").trim();
+      if (!title) throw new Error("缺少标题（title）参数");
+      const count = Math.max(1, Math.min(Number(params.count) || 8, 20));
+      const tags = await textClient.generateTags({
+        modelConfig,
+        apiKey,
+        onUsage: makeUsageLogger(userId, modelConfig.modelName),
+        title,
+        body: typeof params.body === "string" ? params.body : "",
+        count,
+      });
+      if (tags.length === 0) return { tags, count: 0, reason: "模型未返回可用标签" };
+      return { tags, count: tags.length };
+    }
     default: {
       // 过渡期护栏：注册表种子（ensureUserSkills）会让这些 key 落进 LLM 兜底、产出假结果 —— 宁可响亮失败
       if (INTERIM_UNIMPLEMENTED_SKILLS.has(skillKey)) {

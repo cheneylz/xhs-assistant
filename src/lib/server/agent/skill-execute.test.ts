@@ -182,3 +182,66 @@ describe("library_note_detail", () => {
     expect(result.content_truncated).toBe(false);
   });
 });
+
+describe("content_titles", () => {
+  it("正常生成：返回 titles 与 count，count 让下游工具可以直接消费", async () => {
+    const result = await executeSkill(
+      "content_titles",
+      { title: "露营装备清单", body: "正文", count: 3 },
+      makeModelContext({ generateTitles: vi.fn(async () => ["标题A", "标题B", "标题C"]) }),
+    );
+    expect(result.titles).toEqual(["标题A", "标题B", "标题C"]);
+    expect(result.count).toBe(3);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("未配置模型 / 缺 title 都抛可读错误（不触达 textClient）", async () => {
+    await expect(executeSkill("content_titles", { title: "T" }, makeContext())).rejects.toThrow(
+      "未配置文本模型，无法生成标题",
+    );
+    await expect(executeSkill("content_titles", {}, makeModelContext({}))).rejects.toThrow("缺少标题（title）参数");
+  });
+
+  it("count 参数被钳制在 1..10 后才传给 textClient", async () => {
+    const generateTitles = vi.fn(async () => ["A"]);
+    await executeSkill("content_titles", { title: "T", count: 999 }, makeModelContext({ generateTitles }));
+    expect(generateTitles).toHaveBeenCalledWith(expect.objectContaining({ count: 10 }));
+  });
+
+  it("模型返回空数组时把 reason 放进 details（摘要会带出来）", async () => {
+    const result = await executeSkill(
+      "content_titles",
+      { title: "T" },
+      makeModelContext({ generateTitles: vi.fn(async () => []) }),
+    );
+    expect(result.titles).toEqual([]);
+    expect(result.count).toBe(0);
+    expect(result.reason).toBe("模型未返回可用标题");
+  });
+});
+
+describe("content_tags", () => {
+  it("正常生成：返回 tags 与 count", async () => {
+    const result = await executeSkill(
+      "content_tags",
+      { title: "露营装备清单", count: 2 },
+      makeModelContext({ generateTags: vi.fn(async () => ["露营", "户外"]) }),
+    );
+    expect(result.tags).toEqual(["露营", "户外"]);
+    expect(result.count).toBe(2);
+  });
+
+  it("未配置模型 / 缺 title 都抛可读错误", async () => {
+    await expect(executeSkill("content_tags", { title: "T" }, makeContext())).rejects.toThrow(
+      "未配置文本模型，无法生成标签",
+    );
+    await expect(executeSkill("content_tags", {}, makeModelContext({}))).rejects.toThrow("缺少标题（title）参数");
+  });
+
+  it("count 参数被钳制在 1..20 后才传给 textClient，空结果带 reason", async () => {
+    const generateTags = vi.fn(async () => []);
+    const result = await executeSkill("content_tags", { title: "T", count: 999 }, makeModelContext({ generateTags }));
+    expect(generateTags).toHaveBeenCalledWith(expect.objectContaining({ count: 20 }));
+    expect(result.reason).toBe("模型未返回可用标签");
+  });
+});
