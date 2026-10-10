@@ -431,17 +431,26 @@ export function parseSseBuffer(buffer: string): { frames: AgentEventItem[]; rest
 }
 
 /**
- * 帧守卫：id / type / payload 三样齐备才算帧。
- * payload 必须是普通对象 —— applyEventFrame 会直接解引用 frame.payload.*，
- * 而页面没有 error boundary：一帧缺载荷会让整个工作台白屏（而不是跳过这一帧）。
+ * 帧守卫：id / type / created_at / run_id / payload 五样齐备才算帧。
+ * payload 必须是普通对象 —— applyEventFrame 会直接解引用 frame.payload.*；
+ * created_at 会被渲染层直接读（`created_at.length`）、run_id 会参与工具卡键构造 ——
  * 口径与 applyFirstScreen 侧用的 toRecord 一致（非 null、对象、非数组）。
+ * 页面没有 error boundary：一帧缺字段会让整个工作台白屏（而不是跳过这一帧）。
  */
 function isAgentEventItem(value: unknown): value is AgentEventItem {
   if (value === null || typeof value !== "object") return false;
-  const candidate = value as { id?: unknown; type?: unknown; payload?: unknown };
+  const candidate = value as {
+    id?: unknown;
+    type?: unknown;
+    payload?: unknown;
+    created_at?: unknown;
+    run_id?: unknown;
+  };
   return (
     typeof candidate.id === "number" &&
     typeof candidate.type === "string" &&
+    typeof candidate.created_at === "string" &&
+    typeof candidate.run_id === "number" &&
     candidate.payload !== null &&
     typeof candidate.payload === "object" &&
     !Array.isArray(candidate.payload)

@@ -68,6 +68,10 @@ export default function AgentWorkspacePage() {
   const executing = state.runStatus.executing;
   const pendingRunId = state.runStatus.pendingRunIds.length > 0 ? state.runStatus.pendingRunIds[0] : null;
 
+  /** 快照是否已应用到当前选中的会话：未应用前不允许发送（否则在途快照会整体替换时间线、
+   *  抹掉刚发出的用户消息 —— 它不在事件流里，水位重放补不回来。整体终审 I1） */
+  const composerReady = selectedId !== null && syncedId === selectedId;
+
   const refreshList = useCallback(async () => {
     try {
       setConversations(await fetchAgentConversations());
@@ -218,7 +222,8 @@ export default function AgentWorkspacePage() {
   const handleSend = useCallback(async () => {
     const id = selectionRef.current;
     const content = draft.trim();
-    if (id === null || !content || sending || executing) return;
+    // syncedId !== id：当前会话的快照还没落地，此时发送会被在途快照抹掉且无法恢复（终审 I1）
+    if (id === null || syncedId !== id || !content || sending || executing) return;
     setSending(true);
     try {
       const result = await sendAgentMessage(id, content);
@@ -240,7 +245,7 @@ export default function AgentWorkspacePage() {
     } finally {
       setSending(false);
     }
-  }, [draft, executing, resync, sending]);
+  }, [draft, executing, resync, sending, syncedId]);
 
   const handleCancel = useCallback(async () => {
     if (pendingRunId === null) return;
@@ -350,7 +355,7 @@ export default function AgentWorkspacePage() {
                 placeholder="描述你的任务（Enter 发送，Shift+Enter 换行）"
                 autoSize={{ minRows: 1, maxRows: 4 }}
                 maxLength={4000}
-                disabled={executing}
+                disabled={executing || !composerReady}
               />
               <div
                 style={{
@@ -361,7 +366,7 @@ export default function AgentWorkspacePage() {
                 }}
               >
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  {executing ? "执行中，完成后可继续对话" : ""}
+                  {executing ? "执行中，完成后可继续对话" : composerReady ? "" : "正在加载会话…"}
                 </Text>
                 <Space>
                   {pendingRunId !== null && (
@@ -374,7 +379,7 @@ export default function AgentWorkspacePage() {
                     size="small"
                     icon={<SendOutlined />}
                     loading={sending}
-                    disabled={executing || !draft.trim()}
+                    disabled={executing || !composerReady || !draft.trim()}
                     onClick={() => void handleSend()}
                   >
                     发送

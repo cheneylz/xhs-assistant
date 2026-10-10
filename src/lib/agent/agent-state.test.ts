@@ -603,6 +603,13 @@ describe("parseSseBuffer（SSE 缓冲解析，与 crawlXhsDataStream 同范式�
     expect(parseSseBuffer(buffer).frames).toEqual([]);
   });
 
+  it("缺 created_at / run_id 的帧同样被跳过（渲染层会直接读 created_at）", () => {
+    const buffer =
+      'data: {"id":1,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":2,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":3,"run_id":1,"type":"status","payload":{}}\n\n';
+    const { frames } = parseSseBuffer(buffer);
+    expect(frames.map((item) => item.id)).toEqual([1]);
+  });
+
   it("一次读入多帧：全部按序返回且 rest 为空（重连后单块最多 200 帧，这是常态路径）", () => {
     const frame = (id: number) =>
       `data: {"id":${id},"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\n`;
