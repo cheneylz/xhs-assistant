@@ -33,8 +33,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 3 SSE 缓冲解析 + reducer 包装 | ✅ 已验收 | `3b34104`（含 Task 2 审查跟进） |
 | Task 3 补丁（质量审查修复） | ✅ 已验收 | `5ee0c40` |
 | Task 4 API 封装（6 个函数） | ✅ 已验收 | `10f4bc9`（跟进项并入 Task 5） |
-| Task 5 use-agent-events（SSE + 重连） | 🔶 实现完成，待补丁复审 | `a4efbd5`（含 Task 4 审查跟进） |
-| Task 5 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 5 use-agent-events（SSE + 重连） | ✅ 已验收 | `a4efbd5`（含 Task 4 审查跟进） |
+| Task 5 补丁（质量审查修复） | ✅ 已验收 | `3878c73` |
 | Task 6 conversation-list | ⬜ 未开始 | |
 | Task 7 message-stream + message-bubble | ⬜ 未开始 | |
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
