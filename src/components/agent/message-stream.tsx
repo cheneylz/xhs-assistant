@@ -28,6 +28,8 @@ interface MessageStreamProps {
 export function MessageStream({ items, executing, truncated, loading }: MessageStreamProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  /** 上一次渲染的内容指纹（条数 + 末条 key）：只有内容真的变多才提示「有新消息」 */
+  const contentRef = useRef("");
   const [hasNew, setHasNew] = useState(false);
 
   const handleScroll = () => {
@@ -41,9 +43,21 @@ export function MessageStream({ items, executing, truncated, loading }: MessageS
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
+    // 切会话会先清空时间线（agentReducer 的 clear）：把跟随状态一并复位 ——
+    // 否则在旧会话里上滚过的话，新会话会停在历史顶部并谎报「有新消息」
+    // （items 为空只出现在「切会话清空」与「空会话」两种情形，运行中不会出现）
+    if (items.length === 0) {
+      atBottomRef.current = true;
+      contentRef.current = "";
+      setHasNew(false);
+      return;
+    }
+    const fingerprint = `${items.length}:${items[items.length - 1].key}`;
+    const contentChanged = fingerprint !== contentRef.current;
+    contentRef.current = fingerprint;
     if (atBottomRef.current) {
       element.scrollTop = element.scrollHeight;
-    } else {
+    } else if (contentChanged) {
       setHasNew(true);
     }
   }, [items, executing]);
@@ -58,7 +72,19 @@ export function MessageStream({ items, executing, truncated, loading }: MessageS
 
   return (
     <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column" }}>
-      <div ref={containerRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", padding: "16px 16px 4px" }}>
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        // 滚轮上滚是**同步**信号：scroll 事件要等浏览器渲染阶段才派发，若一帧恰落在
+        // 「用户已改 scrollTop」与「scroll 事件派发」之间，effect 会读到旧值把上滚抹掉。
+        // 所以不让 atBottomRef 只由异步 scroll 事件驱动（滚回底部仍由 handleScroll 重新开启跟随）。
+        onWheel={(event) => {
+          if (event.deltaY < 0) {
+            atBottomRef.current = false;
+          }
+        }}
+        style={{ flex: 1, overflowY: "auto", padding: "16px 16px 12px" }}
+      >
         {truncated && (
           <div style={{ textAlign: "center", marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
