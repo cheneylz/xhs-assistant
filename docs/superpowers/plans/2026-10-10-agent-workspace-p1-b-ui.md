@@ -911,7 +911,6 @@ import type {
   AgentToolCallItem,
 } from "@/types";
 import {
-  agentReducer,
   applyEventFrame,
   applyFirstScreen,
   createInitialState,
@@ -1115,12 +1114,10 @@ describe("applyEventFrame（SSE 增量归并）", () => {
   });
 
   it("agent_end 解除执行中并清空可取消列表", () => {
-    const executing = agentReducer(applyFirstScreen(createInitialState(), buildDetail()), {
-      type: "runCreated",
-      conversation: buildDetail().conversation,
-      message: buildUserMessage(),
-      run: buildRun({ id: 9, status: "pending" }),
-    });
+    const executing = applyFirstScreen(
+      createInitialState(),
+      buildDetail({ runs: [buildRun({ id: 9, status: "running" })] }),
+    );
     expect(executing.runStatus.executing).toBe(true);
     const ended = applyEventFrame(executing, buildFrame({ id: 80, type: "agent_end", payload: {} }));
     expect(ended.runStatus).toEqual({ executing: false, pendingRunIds: [] });
@@ -1293,13 +1290,13 @@ export function applyEventFrame(state: AgentUiState, frame: AgentEventItem): Age
 npx vitest run src/lib/agent/agent-state.test.ts
 ```
 
-Expected: PASS（Task 1 的 13 个 + Task 2 的 13 个 = 26 个；`agent_end` 那条用例此时仍会失败，因为它用了 Task 3 才实现的 `agentReducer`／`runCreated` —— **这是预期的**，Task 3 完成后全绿。若先跑出 1 个失败，确认失败的是 `agent_end` 用例即可继续）。
+Expected: PASS（28 个用例：Task 1 的 13 + Step 0 的排序补测 1 + 契约镜像 1 + 帧归并 13）。本任务自包含、不依赖后续任务，必须**全绿**再提交。
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add src/lib/agent/agent-state.ts src/lib/agent/agent-state.test.ts
-git commit -m "feat(agent-ui): SSE 事件帧身份幂等归并（工具卡按 runId:toolCallId 复合键）"
+git commit -m "feat(agent-ui): SSE 事件帧身份幂等归并（含 Task 1 审查跟进：契约镜像断言/排序补测）"
 ```
 
 ---
