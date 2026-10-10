@@ -596,6 +596,20 @@ describe("parseSseBuffer（SSE 缓冲解析，与 crawlXhsDataStream 同范式�
     const buffer = 'data: {"type":"status"}\n\ndata: null\n\n';
     expect(parseSseBuffer(buffer).frames).toEqual([]);
   });
+
+  it("缺 payload / payload 为 null 的帧被跳过（不会在 reducer 里解引用崩掉整页）", () => {
+    const buffer =
+      'data: {"id":1,"run_id":1,"type":"status","created_at":"t"}\n\ndata: {"id":2,"run_id":1,"type":"status","payload":null,"created_at":"t"}\n\n';
+    expect(parseSseBuffer(buffer).frames).toEqual([]);
+  });
+
+  it("一次读入多帧：全部按序返回且 rest 为空（重连后单块最多 200 帧，这是常态路径）", () => {
+    const frame = (id: number) =>
+      `data: {"id":${id},"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\n`;
+    const { frames, rest } = parseSseBuffer(`${frame(1)}${frame(2)}${frame(3)}`);
+    expect(frames.map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(rest).toBe("");
+  });
 });
 
 describe("applyArtifacts / agentReducer（右栏刷新与 action 包装）", () => {
@@ -678,5 +692,18 @@ describe("applyArtifacts / agentReducer（右栏刷新与 action 包装）", () 
     const withFrame = agentReducer(withSnapshot, { type: "frame", frame: buildFrame({ id: 51 }) });
     expect(withFrame.timeline).toHaveLength(2);
     expect(withFrame.lastEventId).toBe(51);
+  });
+
+  it("runStatus 传空 runs：回到空闲（服务端一条 Run 都没有的边界）", () => {
+    const executing = agentReducer(createInitialState(), {
+      type: "runCreated",
+      conversation: buildDetail().conversation,
+      message: buildUserMessage(),
+      run: buildRun({ id: 9, status: "pending" }),
+    });
+    expect(agentReducer(executing, { type: "runStatus", runs: [] }).runStatus).toEqual({
+      executing: false,
+      pendingRunIds: [],
+    });
   });
 });
