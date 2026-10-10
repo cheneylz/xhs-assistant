@@ -519,4 +519,63 @@ describe("runAgentLoop（循环编排）", () => {
     // 若兜底没有把行 id 写回条目，事件侧的回填会再补一行（第三次）—— 那就是重复审计行
     expect(fake.persistToolCall.mock.calls).toHaveLength(2);
   });
+
+  it("参数校验失败的调用也被回填（第二类短路）", async () => {
+    // 工具声明了必填参数，脚本却给空对象 → Pi 的 validateToolArguments 抛错 → 短路，不进钩子
+    const strictTool = {
+      name: "hot_refresh",
+      label: "热点采集",
+      description: "测试用",
+      parameters: Type.Object({ keyword: Type.String() }),
+      replay: "never",
+      execute: async () => ({ content: [{ type: "text" as const, text: "{}" }], details: {} }),
+    } as never;
+    const { fake, options } = baseOptions({
+      tools: [strictTool],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "hot_refresh", {}),
+        assistantText("参数不对，我重新调"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ status: "failed", errorType: "not_executed", stepIndex: 0 });
+    expect(fake.started[0]?.summary ?? "").toContain("未执行：");
+  });
+
+  it("输出被 length 截断的调用也被回填（第三类短路）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 1 })],
+      fakeStreamFn: createScriptedStreamFn([
+        { ...assistantToolCall("call-1", "hot_refresh", {}), stopReason: "length" },
+        assistantText("输出被截断了"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({ status: "failed", errorType: "not_executed" });
+    expect(fake.started[0]?.summary ?? "").toContain("未执行：");
+  });
+
+  it("回填行带上了入参、可读错误与耗时兜底", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 1 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "not_exist", { keyword: "露营" }),
+        assistantText("换个方式"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    const row = fake.started[0];
+    // 入参来自 tool_execution_start 的 args（条目里存的）
+    expect(row?.params).toMatchObject({ keyword: "露营" });
+    // 失败且 details 为空时把错误文本塞进 result.error（否则卡片展开是空的）
+    expect(row?.result).toMatchObject({ error: expect.stringContaining("not found") });
+    // 短路调用没有 durationMs，用条目里的起始时刻兜底（必须是数字且非负）
+    expect(typeof row?.durationMs).toBe("number");
+    expect(row?.durationMs ?? -1).toBeGreaterThanOrEqual(0);
+  });
 });

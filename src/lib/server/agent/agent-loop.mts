@@ -441,38 +441,15 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
       }
     }
 
-    try {
-      await persistEvent(runId, record);
-    } catch (error) {
-      console.error("[agent] 事件落库失败", error);
-    }
-
-    // 每个工具调用都会先发 tool_execution_start（含被短路的那些），因此在这里分配序号与起始时刻
-    if (record.type === "tool_execution_start") {
-      toolCallRows.set(String(record.toolCallId ?? ""), {
-        rowId: null,
-        stepIndex,
-        startedAt: Date.now(),
-        params: asRecord(record.args),
-      });
-      stepIndex += 1;
-    }
-
-    // 逐轮累计 token：usage 只在 message_end 的最终消息上完整
-    if (record.type === "message_end") {
-      const message = record.message as Partial<AssistantMessage> | undefined;
-      if (message?.role === "assistant") {
-        finalAssistant = message as AssistantMessage;
-        tokensUsed += Number(message.usage?.totalTokens ?? 0);
-      }
-    }
-
-    // 连续失败计数（含被阻断的调用：阻断同样是「模型做错了」的信号）
+    // 回填必须在事件行落库**之前**：SSE 出口是「查到事件行就转发」，摘要靠转发那一刻
+    // 查 agent_tool_calls 补齐 —— 若先落事件行，就会出现「事件已转发、审计行还没写完」的
+    // 窗口，转发出去的帧没有摘要（正是本回填要消灭的症状）。
+    //
+    // 三类「没走到钩子」的调用（工具名不存在 / 参数校验失败 / 输出被 length 截断）不会在
+    // beforeToolCall / afterToolCall 里落行，前端因此会收到没有卡片、没有摘要的帧。
+    // 用事件载荷补一行 —— 事件里带着 toolCallId / toolName / result / isError，
+    // 缺的只是入参（在 tool_execution_start 时已存进条目）。
     if (record.type === "tool_execution_end") {
-      // 三类「没走到钩子」的调用（工具名不存在 / 参数校验失败 / 输出被 length 截断）不会在
-      // beforeToolCall / afterToolCall 里落行，前端因此会收到没有卡片、没有摘要的帧。
-      // 用事件载荷补一行 —— 事件里带着 toolCallId / toolName / result / isError，
-      // 缺的只是入参（在 tool_execution_start 时已存进条目）。
       const backfillId = String(record.toolCallId ?? "");
       const backfillEntry = toolCallRows.get(backfillId);
       if (backfillEntry && backfillEntry.rowId === null) {
@@ -502,14 +479,50 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
               toolName,
               details: backfillDetails,
               isError: backfillIsError,
-              failureReason: backfillErrorText || null,
+              // 加前缀让用户看得出「根本没执行」而不是「执行后失败」——
+              // 三类短路的原始原因都是 Pi 的英文报文
+              failureReason: backfillErrorText ? `未执行：${backfillErrorText}` : null,
             }),
           });
         } catch (error) {
           await notePersistFailure("subscribe/toolCallBackfill", error);
         }
       }
+    }
 
+    try {
+      await persistEvent(runId, record);
+    } catch (error) {
+      console.error("[agent] 事件落库失败", error);
+    }
+
+    // 每个工具调用都会先发 tool_execution_start（含被短路的那些），因此在这里分配序号与起始时刻。
+    // 已有条目时不覆盖：那说明 beforeToolCall 已经跑过（当前 Pi 不会，但顺序是外部契约），
+    // 覆盖会把已落库的行 id 冲掉，进而在 tool_execution_end 时补出重复行。
+    if (record.type === "tool_execution_start") {
+      const startId = String(record.toolCallId ?? "");
+      if (!toolCallRows.has(startId)) {
+        toolCallRows.set(startId, {
+          rowId: null,
+          stepIndex,
+          startedAt: Date.now(),
+          params: asRecord(record.args),
+        });
+        stepIndex += 1;
+      }
+    }
+
+    // 逐轮累计 token：usage 只在 message_end 的最终消息上完整
+    if (record.type === "message_end") {
+      const message = record.message as Partial<AssistantMessage> | undefined;
+      if (message?.role === "assistant") {
+        finalAssistant = message as AssistantMessage;
+        tokensUsed += Number(message.usage?.totalTokens ?? 0);
+      }
+    }
+
+    // 连续失败计数（含被阻断的调用：阻断同样是「模型做错了」的信号）
+    if (record.type === "tool_execution_end") {
       const failure = failureTracker.record(!record.isError);
       if (failure.exceeded && !abortReason) {
         abortReason = "tool_failures";
