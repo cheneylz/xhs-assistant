@@ -1253,16 +1253,28 @@ export async function fetchAgentConversations(): Promise<AgentConversation[]> {
 
 /**
  * POST /api/agent/conversations 新建会话。
- * 请求体必须发 `{}` —— 空 body 会被 zod 判成非法（P1A 交接 §三 接口 2）。
+ * 请求体必须发 `{}` —— 空 body 会先死在 readJson 的 JSON 解析上（400，P1A 交接 §三 接口 2），
+ * 到不了 zod。
+ * 标题做 trim 守卫：服务端是 `z.string().trim().min(1)`，纯空白会 422 并弹出英文 zod 报文。
  */
 export async function createAgentConversation(title?: string): Promise<AgentConversation> {
-  const response = await http.post<AgentConversation>("/agent/conversations", title ? { title } : {});
+  const trimmed = title?.trim();
+  const response = await http.post<AgentConversation>("/agent/conversations", trimmed ? { title: trimmed } : {});
   return response.data;
 }
 
-/** GET /api/agent/conversations/[id] 首屏契约（十个字段） */
-export async function fetchAgentConversation(conversationId: number): Promise<AgentConversationDetail> {
-  const response = await http.get<AgentConversationDetail>(`/agent/conversations/${conversationId}`);
+/**
+ * GET /api/agent/conversations/[id] 首屏契约（十个字段）。
+ * silent=true 时不弹错误 toast（页面执行中的 5s 兜底轮询用；静默失败靠下一拍自愈）——
+ * 与 fetchSavedNote 的 silent 逃生口同一写法。
+ */
+export async function fetchAgentConversation(
+  conversationId: number,
+  silent = false,
+): Promise<AgentConversationDetail> {
+  const response = await http.get<AgentConversationDetail>(`/agent/conversations/${conversationId}`, {
+    _silent: silent,
+  } as never);
   return response.data;
 }
 
