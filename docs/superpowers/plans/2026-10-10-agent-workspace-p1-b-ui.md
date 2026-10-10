@@ -40,9 +40,10 @@ npx tsc --noEmit        # 期望无输出
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
-| Task 11 浏览器端到端验收 + 交接 | ⬜ 未开始 | |
+| Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
+| Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
-**当前基线**：24 文件 / 248 用例全绿，`tsc --noEmit` 无输出。
+**当前基线**：25 文件 / 290 用例全绿，`tsc --noEmit` 无输出。
 
 ---
 
@@ -60,7 +61,7 @@ npx tsc --noEmit        # 期望无输出
 | 8 | **停 worker 必须按进程树清**（`TaskStop` / 杀父进程都杀不掉子 `node`；残留 worker 会用旧代码领任务，制造「改了代码行为没变」的假象） | P1A 交接 §五.1 |
 | 9 | **跑 `next build` 前先停 dev server**（build 会覆盖 dev 的 `.next` → 未编译过的路由稳定 500；修法：停 dev → `rm -rf .next` → 再起 dev） | P1A 交接 §五.2 |
 | 10 | **命令行传中文会损坏字节、多行 `tsx -e` 只跑首行** —— 需要中文请求体时写 UTF-8 文件再 `curl --data-binary @file` | P1A 交接 §五.3/4 |
-| 11 | **新文件风格对齐** `src/lib/agent/polling.ts` 与 `src/components/ui/route-guards.tsx`：无分号、双引号、2 空格缩进、**中文注释**；插入 `src/types/index.ts` 与 `src/lib/api.ts` 的内容按那两处的既有风格（有分号） | CLAUDE.md 原则 2 |
+| 11 | **风格以计划里的代码块为准**：B 块新增文件的代码块统一用**分号**、双引号、2 空格缩进、**中文注释**（与 `src/lib/api.ts` / `src/components/ui/route-guards.tsx` 一致）。仓库里 `app-shell.tsx` / `polling.ts` 的无分号是历史个例 —— **不要**据此改写代码块 | CLAUDE.md 原则 2 |
 | 12 | **提交信息用 `feat(agent-ui): …` / `test(agent-ui): …` / `docs(agent): …`**；每个 Task 一次提交 | A 计划体例 |
 
 ---
@@ -2267,7 +2268,7 @@ git commit -m "fix(agent-ui): SSE hook 401/404 处理与 sleep 监听器泄漏�
 **Files:**
 - Create: `src/components/agent/conversation-list.tsx`
 
-**验证方式**：本任务与 Task 7-9 的组件是纯展示层，验证 = `tsc` + 代码审查；**浏览器验收统一在 Task 10 接线后、Task 11 执行**。
+**验证方式**：本任务与 Task 7-9 的组件是纯展示层，验证 = `tsc` + 代码审查；**浏览器验收统一在 Task 10 接线后、Task 12 执行**。
 
 - [ ] **Step 1: 实现**
 
