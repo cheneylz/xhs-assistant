@@ -124,7 +124,12 @@ C 块沿用同一流程：15 个功能提交 = 10 个任务 + 5 个补丁，每�
 
 **操作规矩**：
 
-1. **停 worker 必须按进程树清**（命令见 §五.1；`TaskStop` 与杀父进程都杀不掉子 `node`）。残留 worker 会继续领任务、污染验收结果
+1. **停 worker 必须按进程树清**（`TaskStop` 与杀父进程都杀不掉子 `node`；残留 worker 会继续领任务、污染验收结果）：
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+     Where-Object { $_.CommandLine -like '*worker/index.mts*' } |
+     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   ```
 2. **跑 `next build` 前先停 dev server**；build 完 `rm -rf .next` 再 `npm run dev`
 3. push 由用户本人执行；`feat/agent-p1c-tools` 尚未推送，合并回 `main` 的时机由用户定
 
