@@ -92,7 +92,13 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
 返回本次采集收录的话题数量（collected）。`,
     // 注意：热点采集会写库（hotTopic.createMany + deleteMany 清上一批），故为 write 而非 read
     riskLevel: "write",
-    summarize: (details) => `收录 ${summarizeCount(details.collected)} 条热点`,
+    summarize: (details) => {
+      const collected = summarizeCount(details.collected);
+      if (collected > 0) return `收录 ${collected} 条热点`;
+      // 0 条时把原因带出来：否则用户无法区分「没配关键词组」与「采集失败」（验收发现）
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `收录 0 条热点${reason}`;
+    },
   },
   {
     skillKey: "topic_generate",
@@ -272,7 +278,9 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
         userId,
         adapterFactory: (cookies) => new XhsPcApiAdapter(cookies),
       });
-      return { collected: result.collected };
+      // reason 必须透传：它是「为什么 0 条」的唯一说明（无关键词组 / 无 Cookie / 采集无结果），
+      // 丢了它工具卡就只剩一句「收录 0 条热点」（浏览器验收发现的 P0 可诊断性缺陷）
+      return { collected: result.collected, snapshotTime: result.snapshotTime, reason: result.reason };
     }
     case "topic_generate": {
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成选题");

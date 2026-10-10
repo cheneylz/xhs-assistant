@@ -109,4 +109,14 @@ describe("SKILL_CATALOG（技能目录）", () => {
     // Number(true) === 1：布尔不是「条数」，但工具不会返回布尔，这里只把现有行为钉住
     expect(summarizeCount(true)).toBe(1);
   });
+
+  it("hot_refresh 的摘要：有产出给条数，0 条时带出原因", () => {
+    const hotRefresh = SKILL_CATALOG.find((definition) => definition.skillKey === "hot_refresh");
+    if (!hotRefresh) throw new Error("hot_refresh 不在目录里");
+    expect(hotRefresh.summarize({ collected: 12 })).toBe("收录 12 条热点");
+    expect(hotRefresh.summarize({ collected: 0 })).toBe("收录 0 条热点");
+    expect(hotRefresh.summarize({ collected: 0, reason: "无种子关键词，请先配置关键词组" })).toBe(
+      "收录 0 条热点（无种子关键词，请先配置关键词组）",
+    );
+  });
 });
