@@ -4661,6 +4661,7 @@ npx tsx src/scripts/agent-smoke.ts     # 期望「P0 验收全部通过」
 - Modify: `src/components/agent/message-bubble.tsx`
 - Modify: `src/app/globals.css`
 - Modify: `src/lib/server/agent/skill-catalog.ts` / `skill-catalog.test.ts`
+- Modify: `vitest.config.ts`（**执行时发现的必要偏差**：项目 `jsx: "preserve"` 让 vitest 的 esbuild 退化成经典 JSX 运行时，首个 import `.tsx` 组件的测试会 `ReferenceError: React is not defined` —— 加 `esbuild: { jsx: "automatic" }` 与生产编译对齐）
 - Create: `src/components/agent/message-bubble.test.ts`
 
 - [ ] **Step 1: `MessageBubble` 包 memo**（与 `ToolCallCard`/`ArtifactPanel`/`MemoMessageStream` 同一取舍；props 是三个原始值，memo 必命中）
@@ -4762,10 +4763,10 @@ describe("MessageBubble 的 markdown 渲染", () => {
 
 ```bash
 npx vitest run src/components/agent/message-bubble.test.ts   # 期望 3 用例通过
-npx vitest run        # 期望 27 文件 / 305 用例
+npx vitest run        # 期望 27 文件 / 304 用例（基线 301 + 新建文件 3；skill-catalog 那条是在既有 it 内追加断言，不增用例数）
 npx tsc --noEmit      # 期望无输出
 
-git add src/components/agent/message-bubble.tsx src/components/agent/message-bubble.test.ts src/app/globals.css src/lib/server/agent/skill-catalog.ts src/lib/server/agent/skill-catalog.test.ts
+git add src/components/agent/message-bubble.tsx src/components/agent/message-bubble.test.ts src/app/globals.css src/lib/server/agent/skill-catalog.ts src/lib/server/agent/skill-catalog.test.ts vitest.config.ts
 git commit -m "perf(agent-ui): 气泡 memo 化并补 markdown 渲染用例（验收修复终验小修）"
 ```
 
