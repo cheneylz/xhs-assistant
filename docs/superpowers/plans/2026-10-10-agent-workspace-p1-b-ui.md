@@ -74,6 +74,7 @@ npx tsc --noEmit        # 期望无输出
 | D5 | 交接文档列了 8 个前端文件 | 实际还需要 3 类文件：纯函数模块与其测试（D25 明确要求）、`src/types/index.ts` 与 `src/lib/api.ts` 的追加（项目约定：API 类型与封装都在这两处，见 `fetchXhsOverview` 等 100+ 个同族函数） | 12 个新文件 + 3 个修改（见 §三） |
 | D6 | §7.2 第 3 条要求「阻断」状态渲染正确但**生产不可达** | 交接文档明确「照实现即可，验收时演示不出来」 | 照实现 + 单测覆盖状态映射，**并额外提供一个验收夹具脚本**（往 dev 库插 `blocked` / `failed` 夹具行，刷新即可看到对应状态的卡，用完即删）—— 让第 3 条可见、确定地验收（`failed` 靠真实工具报错不稳定，一并夹具化） |
 | D7 | 设计稿 D20 右栏常驻 + 接口 6「仅供右栏单独刷新」 | 接口 6 需要有入口才能被验收 | 工件面板右上角加一个刷新按钮（`ReloadOutlined`），接接口 6 |
+| D8 | 设计稿把 SSE 当作唯一的实时通道 | 存在一个重连补不回来的毫秒级窗口：worker 先落 `agent_end`、后写 Run 终态，快照恰在窗口内返回时水位越过 `agent_end`（Task 1 质量审查发现） | 前端在执行中每 5s 发一次 `runStatus` 动作，用接口 3 的 `runs` **只校正执行状态**（不动时间线/水位、不重连）；空闲即停 |
 
 ---
 
@@ -818,12 +819,88 @@ git commit -m "feat(agent-ui): 首屏快照归并（契约类型 + 时间线构�
 
 **定位**：这是「无需刷新即可看到工具卡与助手文字逐步出现」（§7.2 第 2 条）的核心：帧 → 状态。幂等规则见文件头。
 
+- [ ] **Step 0: 先落地 Task 1 质量审查的 4 项跟进（与 Task 2 同一次提交）**
+
+这四项来自 Task 1 的代码质量审查（结论是 Yes，跟进项随本任务落地）：
+
+**(a) 补一条排序兜底用例** —— 排序三元组的第三段（同秒同 rank 时按各自自增 id 升序）目前没有用例覆盖，而它正是生产里最常见的同秒碰撞分支。在测试文件里追加：
+
+```ts
+describe("同秒同 rank 的兜底排序（id 升序）", () => {
+  it("同秒内的多条消息/多条事件按各自自增 id 升序排，且键带各自的命名空间前缀", () => {
+    const sameSecond = "2026-10-10T10:00:07";
+    const state = applyFirstScreen(
+      createInitialState(),
+      buildDetail({
+        // 传入顺序故意打乱：排序必须按 id，而不是依赖数组顺序
+        events: [
+          buildEvent({ id: 21, created_at: sameSecond, payload: { role: "assistant", text: "晚一点的事件" } }),
+          buildEvent({ id: 20, created_at: sameSecond, payload: { role: "assistant", text: "早一点的事件" } }),
+        ],
+        messages: [
+          buildUserMessage({ id: 1, created_at: sameSecond }),
+          buildUserMessage({ id: 2, created_at: sameSecond, content: "第二条" }),
+        ],
+      }),
+    );
+    expect(state.timeline.map((item) => item.kind)).toEqual(["user", "user", "assistant", "assistant"]);
+    expect(state.timeline.map((item) => item.key)).toEqual(["m:1", "m:2", "e:20", "e:21"]);
+    const assistantTexts = state.timeline.flatMap((item) => (item.kind === "assistant" ? [item.text] : []));
+    expect(assistantTexts).toEqual(["早一点的事件", "晚一点的事件"]);
+  });
+});
+```
+
+**(b) 去掉 `buildTimeline` 末尾的类型断言**（把 filter+map+cast 换成一行 flatMap，让 TS 自己收窄）。把 `agent-state.ts` 里这一行：
+
+```ts
+  return sortables.filter((entry) => entry.item !== null).map((entry) => entry.item as AgentTimelineItem);
+```
+
+换成：
+
+```ts
+  return sortables.flatMap((entry) => (entry.item === null ? [] : [entry.item]));
+```
+
+**(c) 修正 `upsertConversation` 的注释**（原文说「按 updated_at 倒序」，但实现是无条件置顶 —— 注释与实现不符）。把：
+
+```ts
+/** 会话列表的局部更新（新建 / 发消息后标题派生 / 列表刷新）：更新的会话置顶（按 updated_at 倒序） */
+```
+
+换成：
+
+```ts
+/**
+ * 会话列表的局部更新（新建 / 发消息后标题派生 / 列表刷新）：把更新的会话置顶。
+ * 不做按 updated_at 重排 —— 现有调用方传入的必然是刚活跃的会话（新建或刚发过消息），
+ * 置顶即正确；真要做通用排序另说（YAGNI）。
+ */
+```
+
+**(d) 在 messages 映射处记录「不判 role 是有意为之」**（`messages` 按服务端契约只含 user 行；加 role 判断反而会掩盖契约破坏）。给 `buildTimeline` 里 messages 的循环加一行注释：
+
+```ts
+  // messages 只含 role="user" 的行（服务端契约 listConversationUserMessages）；
+  // 这里**不**再判 role —— 判了只会掩盖契约破坏，而重复渲染会立刻暴露它
+  for (const message of detail.messages) {
+```
+
 - [ ] **Step 1: 更新测试文件的 import，并追加失败测试（`agent-state.test.ts`）**
 
-先把文件顶部的 import 列表改成（新增 `applyEventFrame`、`agentReducer`）：
+先把文件顶部的 import 列表改成（新增 `applyEventFrame`、`agentReducer`、服务端 `Serialized*` 类型）：
 
 ```ts
 import { describe, expect, it } from "vitest";
+import type {
+  SerializedAgentConversation,
+  SerializedAgentEvent,
+  SerializedAgentMessage,
+  SerializedAgentRun,
+  SerializedArtifact,
+  SerializedToolCall,
+} from "@/app/api/agent/shared";
 import type {
   AgentArtifactItem,
   AgentConversation,
@@ -844,7 +921,38 @@ import {
 } from "./agent-state";
 ```
 
-然后在文件**末尾**追加：
+然后在文件**末尾**追加下面两个块。
+
+**(1) 契约镜像的编译期断言** —— `src/types/index.ts` 是手工镜像 `src/app/api/agent/shared.ts` 的，加一道类型级闸门：只要服务端契约漂移（改名/必填字段增删/类型变化/键集合变化），`tsc` 直接失败，而不是等到运行时才发现：
+
+```ts
+/**
+ * 契约镜像（类型级断言：本文件能编译通过即为通过）
+ *
+ * `import type` 在编译期完全擦除、不产生运行时依赖（shared.ts 本身也不含 prisma），
+ * 所以这里只借用服务端的类型做结构比对，不会把服务端代码带进客户端包。
+ */
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type SameKeys<A, B> = keyof A extends keyof B ? (keyof B extends keyof A ? true : false) : false;
+/** 互为可赋值 + 键集合一致 = 结构同构（服务端新增可选字段也会被 keyof 比对拦下） */
+type Mirror<A, B> = MutuallyAssignable<A, B> extends true ? SameKeys<A, B> : false;
+
+describe("契约镜像（编译期断言）", () => {
+  it("前端契约类型与服务端 shared.ts 的 Serialized* 同构（漂移 → tsc 失败）", () => {
+    const mirrors: [
+      Mirror<AgentConversation, SerializedAgentConversation>,
+      Mirror<AgentMessageItem, SerializedAgentMessage>,
+      Mirror<AgentEventItem, SerializedAgentEvent>,
+      Mirror<AgentToolCallItem, SerializedToolCall>,
+      Mirror<AgentArtifactItem, SerializedArtifact>,
+      Mirror<AgentRunItem, SerializedAgentRun>,
+    ] = [true, true, true, true, true, true];
+    expect(mirrors.every(Boolean)).toBe(true);
+  });
+});
+```
+
+**(2) 事件帧归并用例**：
 
 ```ts
 function buildFrame(overrides: Partial<AgentEventItem> = {}): AgentEventItem {
@@ -1209,6 +1317,14 @@ git commit -m "feat(agent-ui): SSE 事件帧身份幂等归并（工具卡按 ru
 ```ts
 import { describe, expect, it } from "vitest";
 import type {
+  SerializedAgentConversation,
+  SerializedAgentEvent,
+  SerializedAgentMessage,
+  SerializedAgentRun,
+  SerializedArtifact,
+  SerializedToolCall,
+} from "@/app/api/agent/shared";
+import type {
   AgentArtifactItem,
   AgentConversation,
   AgentConversationDetail,
@@ -1310,6 +1426,24 @@ describe("applyArtifacts / agentReducer（右栏刷新与 action 包装）", () 
     expect(agentReducer(dirty, { type: "clear" })).toEqual(createInitialState());
   });
 
+  it("runStatus 动作：只按 runs 校正执行状态，不动时间线 / 水位 / 工件（页面兜底重同步用）", () => {
+    const state = applyFirstScreen(
+      createInitialState(),
+      buildDetail({
+        events: [buildEvent({ id: 30 })],
+        latest_event_id: 50,
+        runs: [buildRun({ id: 1, status: "running" })],
+      }),
+    );
+    expect(state.runStatus.executing).toBe(true);
+    // 服务端说这个 Run 已经结束了（worker 补写完终态）——只校正执行状态
+    const settled = agentReducer(state, { type: "runStatus", runs: [buildRun({ id: 1, status: "succeeded" })] });
+    expect(settled.runStatus).toEqual({ executing: false, pendingRunIds: [] });
+    expect(settled.timeline).toEqual(state.timeline);
+    expect(settled.lastEventId).toBe(50);
+    expect(settled.artifacts).toEqual(state.artifacts);
+  });
+
   it("snapshot / frame 走对应的纯函数", () => {
     const withSnapshot = agentReducer(createInitialState(), {
       type: "snapshot",
@@ -1373,6 +1507,7 @@ export type AgentAction =
   | { type: "artifacts"; items: AgentArtifactItem[] }
   | { type: "runCreated"; conversation: AgentConversation; message: AgentMessageItem; run: AgentRunItem }
   | { type: "runCancelled" }
+  | { type: "runStatus"; runs: AgentRunItem[] }
   | { type: "clear" };
 
 export function agentReducer(state: AgentUiState, action: AgentAction): AgentUiState {
@@ -1404,6 +1539,10 @@ export function agentReducer(state: AgentUiState, action: AgentAction): AgentUiS
     case "runCancelled":
       // P1 一次只允许一个活跃 Run（服务端有 409 兜底）：取消成功即回空闲
       return { ...state, runStatus: { executing: false, pendingRunIds: [] } };
+    case "runStatus":
+      // 兜底校正（页面在执行中定时调用）：只按服务端最新 runs 校正执行状态 ——
+      // 不动时间线 / 水位 / 工件，因此不需要重连 SSE（动机见 page.tsx 的 settleRunStatus）
+      return { ...state, runStatus: runStatusFromRuns(action.runs) };
     case "clear":
       // 切会话：清空上一个会话的时间线/工件，避免加载期间显示串台数据
       return createInitialState();
@@ -1411,6 +1550,45 @@ export function agentReducer(state: AgentUiState, action: AgentAction): AgentUiS
       return state;
   }
 }
+```
+
+**另外两处外科手术**（改的是 Task 1 已验收的代码，改完跑 Task 1 的用例确认没回归）：
+
+**(i) 抽出 `runStatusFromRuns`，让 `applyFirstScreen` 复用它**（DRY：`runStatus` 动作也要同一套推导，两处各写一份必然漂移）。把 `applyFirstScreen` 里的：
+
+```ts
+    runStatus: {
+      executing: detail.runs.some((run) => isActiveRunStatus(run.status)),
+      pendingRunIds: detail.runs.filter((run) => run.status === "pending").map((run) => run.id),
+    },
+```
+
+换成：
+
+```ts
+    runStatus: runStatusFromRuns(detail.runs),
+```
+
+并在 `applyFirstScreen` **上方**新增：
+
+```ts
+/** 由 Run 列表推导执行状态（applyFirstScreen 与 runStatus 动作共用，避免两处各写一份） */
+export function runStatusFromRuns(runs: AgentRunItem[]): AgentRunStatusView {
+  return {
+    executing: runs.some((run) => isActiveRunStatus(run.status)),
+    pendingRunIds: runs.filter((run) => run.status === "pending").map((run) => run.id),
+  };
+}
+```
+
+**(ii) 文件头补一段**（放在「快照替换后必须重连 SSE」那段之后）—— 把「竞态已被身份幂等解决」的说法限定到「连接存活期间」，并指向页面的兜底校正：
+
+```
+ * 【快照可能错过 agent_end —— 由页面的兜底校正收敛】身份幂等只覆盖「连接存活期间」的帧；
+ * 还有一类跨边界的窗口救不回来：快照水位取 latest_event_id，它计入所有事件类型，而 worker
+ * 先落 agent_end、后写 Run 终态（finishRun）—— 若快照恰在这个毫秒级窗口返回，会出现
+ * 「executing=true 且水位已越过 agent_end」，重连也补不回结束信号。页面在执行中每 5s
+ * 用 runStatus 动作按服务端 runs 校正一次（见 page.tsx 的 settleRunStatus），窗口由此收敛。
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -2335,6 +2513,8 @@ const mainNavItems: MenuProps["items"] = [
  * 都要 `streamKey + 1` 重连、从快照水位重放（幂等归并不会重复渲染）。
  * 【agent_end 后延迟重同步】worker 在循环结束后才写 Run 终态与会话 idle，
  * 立刻重拉可能读到「还在 running」的旧快照。
+ * 【执行中每 5s 兜底校正】见下面的 settleRunStatus —— 覆盖「快照恰落在 agent_end 与
+ * finishRun 之间」的毫秒级窗口（该窗口重连补不回结束信号，见 agent-state.ts 文件头）。
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { SendOutlined } from "@ant-design/icons";
@@ -2460,6 +2640,33 @@ export default function AgentWorkspacePage() {
       }, RESYNC_AFTER_RUN_END_MS);
     },
   });
+
+  /**
+   * 兜底校正执行状态（仅执行中，每 5s 一次）。
+   *
+   * 动机：worker 先落 agent_end、后写 Run 终态（finishRun）—— 若某次快照恰在这个
+   * 毫秒级窗口返回，水位已越过 agent_end，重连补不回结束信号，UI 会卡在「执行中」
+   * （输入框禁用、也没有取消按钮）。定时读一次服务端 runs 把状态收敛。
+   * 只发 runStatus 动作（不动时间线 / 水位 / 工件），因此不需要重连 SSE。
+   * 执行中每 5s 一个轻量 GET，空闲即停（与设计稿「空闲降速」的取向一致）。
+   */
+  const settleRunStatus = useCallback(async () => {
+    const id = selectionRef.current;
+    if (id === null) return;
+    try {
+      const detail = await fetchAgentConversation(id);
+      if (selectionRef.current !== id) return;
+      dispatch({ type: "runStatus", runs: detail.runs });
+    } catch {
+      // 静默：下一拍再试
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!executing || syncedId === null) return;
+    const timer = window.setInterval(() => void settleRunStatus(), 5000);
+    return () => window.clearInterval(timer);
+  }, [executing, syncedId, settleRunStatus]);
 
   const handleCreate = useCallback(async () => {
     setCreating(true);
@@ -2884,6 +3091,8 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 同秒内「工具结束 → 下一条助手文本」的回放排序（首屏/重同步时可能把文本排在卡前）
    - 不显示 `step_count` / token 进度与 `task_id` 深链（实时不可得，留 P2）
    - 「被阻断」靠夹具验收（Task 11）
+   - 快照与 `agent_end` 的毫秒级竞态窗口：已由 Task 10 的 `settleRunStatus` 收敛（执行中每 5s 校正一次执行状态）；把成因与窗口登记在这里备查
+   - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
 
@@ -2923,6 +3132,8 @@ git commit -m "docs(agent): P1-B 交接说明与验收清单对账（C 块剩余
 | SSE 在 dev 下被缓冲 | Next.js 对 GET 做静态优化 | A 块已加 `export const dynamic = "force-dynamic"` 并用脚本实测；Task 12 Step 2 会再次肉眼确认「逐步出现」 |
 | 快照替换丢帧（水位回退后没重连） | 忘记在应用快照后 `streamKey + 1` | `resync` / `handleSelect` 已封装配对逻辑；`agent-state.ts` 文件头与页面文件头都写明；Task 12 Step 5 专门验「不重复 + 不缺」 |
 | 同一张工具卡渲染两遍 | 用了 `toolCallId` 而不是 `runId:toolCallId` 归并 | 复合键由 `toolCardKey` 唯一构造；单测有「跨 Run 同名 call_1」用例钉死 |
+| 快照恰落在 `agent_end` 与 `finishRun` 之间的毫秒级窗口 → UI 卡「执行中」 | 一次快照请求的响应刚好与该窗口重叠（刷新/选择/发送时） | Task 10 的 `settleRunStatus`：执行中每 5s 只发 `runStatus` 动作校正（不重连、不动时间线）；Task 12 交接文档登记成因 |
+| 前端契约与 `shared.ts` 手工镜像漂移 | 服务端改了字段名/类型/键集合，前端没跟 | Task 2 加的 `Mirror` 类型级断言：漂移会让 `tsc` 直接失败（`import type` 不进客户端包） |
 | `next build` 把 dev 的 `.next` 覆盖成坏状态 | 先 build 后继续用 dev | 硬约束 9；Task 12 Step 8 按顺序执行 |
 | 残留 worker 用旧代码领任务 | 任务中断后没按进程树清 | 硬约束 8；Task 12 起手先清 |
 | React 严格模式下 effect 双跑导致 SSE 双连接 | dev 模式 `reactStrictMode`（若开启） | 重连逻辑天然幂等（同一水位重放 + 身份幂等归并）；双流只是多一次查询，不产生重复渲染 |
