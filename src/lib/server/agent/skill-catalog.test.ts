@@ -185,13 +185,13 @@ describe("SKILL_CATALOG（技能目录）", () => {
     if (!reports || !kb) throw new Error("analytics_reports / kb_get 不在目录里");
     expect(reports.summarize({ count: 3, reports: [{}, {}, {}] })).toBe("读取 3 份爆款拆解报告");
     // 契约：reason 解释「为什么是 0」，有产出时不带出来
-    expect(reports.summarize({ count: 0, reports: [], reason: "还没有爆款拆解报告，可先在「爆款拆解」页生成" })).toBe(
-      "读取 0 份爆款拆解报告（还没有爆款拆解报告，可先在「爆款拆解」页生成）",
+    expect(reports.summarize({ count: 0, reports: [], reason: "还没有拆解报告，可先在「策划工作台 → 爆款拆解」生成" })).toBe(
+      "读取 0 份爆款拆解报告（还没有拆解报告，可先在「策划工作台 → 爆款拆解」生成）",
     );
     expect(kb.summarize({ context: "x".repeat(100), length: 100 })).toBe("读取知识库上下文（100 字）");
-    expect(kb.summarize({ context: "", length: 0, reason: "知识库尚未配置，可先在「知识库」页填写账号定位与口吻" })).toBe(
-      "读取知识库上下文（0 字，知识库尚未配置，可先在「知识库」页填写账号定位与口吻）",
-    );
+    expect(
+      kb.summarize({ context: "", length: 0, reason: "知识库尚未配置，可先在「设置 → 账号知识库」填写账号定位与口吻" }),
+    ).toBe("读取知识库上下文（0 字，知识库尚未配置，可先在「设置 → 账号知识库」填写账号定位与口吻）");
   });
 
   it("library_search_notes / library_note_detail 的摘要：带原因与评论数", () => {

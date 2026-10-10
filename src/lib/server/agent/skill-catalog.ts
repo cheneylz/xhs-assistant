@@ -674,6 +674,8 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
     case "library_note_detail": {
       const noteId = Number(params.note_id);
       if (!noteId) throw new Error("缺少笔记（note_id）参数");
+      // 同 draft_id：Prisma 会把有限浮点静默截断（3.7 → 3），不能读错笔记
+      if (!Number.isInteger(noteId) || noteId < 1) throw new Error("note_id 必须是正整数");
       const commentLimit = Math.max(1, Math.min(Number(params.comment_limit) || 20, 200));
       const detail = await getNoteDetail(userId, noteId);
       if (!detail) throw new Error(`笔记 ${noteId} 不存在`);
@@ -734,6 +736,8 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法改写草稿");
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
+      // Prisma 会把有限浮点 id 静默截断（12.7 → 12，实测）—— 唯一破坏性工具绝不能改错草稿
+      if (!Number.isInteger(draftId) || draftId < 1) throw new Error("draft_id 必须是正整数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
       if (!draft) throw new Error(`草稿 ${draftId} 不存在`);
       // 强度只认三档，非法值回退 medium（与路由侧 zod 枚举同口径；Pi 边界另有枚举校验，此回退防的是工作流等非 Pi 调用方）
@@ -759,14 +763,16 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       const limit = Math.max(1, Math.min(Number(params.limit) || 5, 20));
       const reports = await listExplosionReports(userId, limit);
       if (reports.length === 0) {
-        return { reports, count: 0, reason: "还没有爆款拆解报告，可先在「爆款拆解」页生成" };
+        return { reports, count: 0, reason: "还没有拆解报告，可先在「策划工作台 → 爆款拆解」生成" };
       }
       return { reports, count: reports.length };
     }
     case "kb_get": {
+      // buildKbContext 只在所有字段为空时返回空串（每个 section 都带非空白标签前缀），
+      // 因此 !context 恰好等价于「未配置」
       const context = await buildKbContext(userId);
       if (!context) {
-        return { context: "", length: 0, reason: "知识库尚未配置，可先在「知识库」页填写账号定位与口吻" };
+        return { context: "", length: 0, reason: "知识库尚未配置，可先在「设置 → 账号知识库」填写账号定位与口吻" };
       }
       return { context, length: context.length };
     }

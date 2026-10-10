@@ -171,6 +171,10 @@ describe("library_note_detail", () => {
     await expect(executeSkill("library_note_detail", { note_id: 99 }, makeContext())).rejects.toThrow(
       "笔记 99 不存在",
     );
+    // 浮点 id 会被 Prisma 静默截断（3.7 → 3），必须先于查询拦截
+    await expect(executeSkill("library_note_detail", { note_id: 3.7 }, makeContext())).rejects.toThrow(
+      "note_id 必须是正整数",
+    );
   });
 
   it("没有评论时 comment_total 为 0、comments 为空数组", async () => {
@@ -328,10 +332,9 @@ describe("content_rewrite", () => {
     await expect(executeSkill("content_rewrite", { draft_id: 0 }, makeModelContext({}))).rejects.toThrow(
       "缺少草稿（draft_id）参数",
     );
-    // 12.7：Prisma 对非整数 id 返回 null（不抛校验错）→ 「草稿 12.7 不存在」
-    mocks.draftFindFirst.mockResolvedValue(null);
+    // 12.7：Prisma 会把有限浮点 id 静默截断（12.7 → 12，实测）→ 必须先行拦截，绝不能改错草稿
     await expect(executeSkill("content_rewrite", { draft_id: 12.7 }, makeModelContext({}))).rejects.toThrow(
-      "草稿 12.7 不存在",
+      "draft_id 必须是正整数",
     );
   });
 
@@ -352,6 +355,8 @@ describe("analytics_reports", () => {
     expect(mocks.listExplosionReports).toHaveBeenCalledWith(7, 20);
     expect(result.count).toBe(2);
     expect(result.reports).toEqual(reports);
+    // 契约：有产出时不带 reason（与 hot_refresh 同款）
+    expect(result.reason).toBeUndefined();
   });
 
   it("空结果表明原因（用户知道去哪里产出报告）", async () => {
@@ -359,7 +364,7 @@ describe("analytics_reports", () => {
     const result = await executeSkill("analytics_reports", {}, makeContext());
     expect(mocks.listExplosionReports).toHaveBeenCalledWith(7, 5);
     expect(result.count).toBe(0);
-    expect(result.reason).toBe("还没有爆款拆解报告，可先在「爆款拆解」页生成");
+    expect(result.reason).toBe("还没有拆解报告，可先在「策划工作台 → 爆款拆解」生成");
   });
 });
 
@@ -370,12 +375,14 @@ describe("kb_get", () => {
     expect(mocks.buildKbContext).toHaveBeenCalledWith(7);
     expect(result.length).toBe("【账号定位】露营装备测评".length);
     expect(result.context).toBe("【账号定位】露营装备测评");
+    expect(result.reason).toBeUndefined();
   });
 
-  it("知识库为空时 length=0 并带出 reason", async () => {
+  it("知识库为空时 length=0、context 为空串并带出 reason", async () => {
     mocks.buildKbContext.mockResolvedValue("");
     const result = await executeSkill("kb_get", {}, makeContext());
     expect(result.length).toBe(0);
-    expect(result.reason).toBe("知识库尚未配置，可先在「知识库」页填写账号定位与口吻");
+    expect(result.context).toBe("");
+    expect(result.reason).toBe("知识库尚未配置，可先在「设置 → 账号知识库」填写账号定位与口吻");
   });
 });
