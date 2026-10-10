@@ -198,3 +198,81 @@ body {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* ===== DataList（替代 antd 废弃的 List，见 components/ui/data-list.tsx）=====
+   分隔线必须用 :last-child 规则实现，而不是在 JS 里算 isLast：
+   调用点会用行内 style 覆盖 border，行内样式既压过基规则、也压过 :last-child，
+   这正是 antd 原有的层叠次序 —— 所以「末行不留线」与「末行仍要留线（热点话题行）」
+   两种写法都能各自正确工作。 */
+.data-list__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.data-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  /* 行内边距放在 class 里，调用点的行内 style 才能自然覆盖（复刻 antd 的层叠次序） */
+  padding: var(--dl-item-padding);
+}
+
+.data-list--split > .data-list__items > .data-list__item {
+  border-bottom: 1px solid var(--dl-split-color);
+}
+
+.data-list--split > .data-list__items > .data-list__item:last-child {
+  border-bottom: none;
+}
+
+.data-list__empty {
+  padding: 16px;
+  color: var(--dl-color-text-disabled);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* 操作区与内容同一行、右对齐、垂直居中（本项目零处 itemLayout="vertical"） */
+.data-list__actions {
+  flex: 0 0 auto;
+  margin: 0;
+  margin-inline-start: 48px; /* = token.marginXXL */
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.data-list__action {
+  position: relative;
+  display: inline-block;
+  padding: 0 8px;
+}
+
+.data-list__action:first-child {
+  padding-inline-start: 0;
+}
+
+.data-list__action-split {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: 0;
+  width: 1px;
+  height: 14px;
+  transform: translateY(-50%);
+  background: var(--dl-split-color);
+}
+
+/* 与 antd 一致的窄屏降级 */
+@media (max-width: 768px) {
+  .data-list__actions {
+    margin-inline-start: 24px;
+  }
+}
+
+@media (max-width: 576px) {
+  .data-list__item {
+    flex-wrap: wrap;
+  }
+}
