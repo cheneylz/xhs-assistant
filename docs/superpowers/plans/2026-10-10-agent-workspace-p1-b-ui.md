@@ -41,8 +41,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 8 tool-call-card + thinking-indicator | ✅ 已验收 | `f702b4b` |
 | Task 8 补丁（质量审查修复） | ✅ 已验收 | `fe6e425` |
 | Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
-| Task 10 /agent 页面 + 侧边栏入口 | 🔶 实现完成，待补丁复审 | `9811360`（含 Task 9 审查跟进） |
-| Task 10 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 10 /agent 页面 + 侧边栏入口 | ✅ 已验收 | `9811360`（含 Task 9 审查跟进） |
+| Task 10 补丁（质量审查修复） | ✅ 已验收 | `7973542` |
 | Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
