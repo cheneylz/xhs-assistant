@@ -4407,6 +4407,255 @@ npx tsc --noEmit      # 期望无输出
 git add "src/app/(protected)/agent/page.tsx" src/lib/agent/agent-state.ts src/lib/agent/agent-state.test.ts
 git commit -m "fix(agent-ui): 快照落地前禁止发送 + 帧守卫补 created_at/run_id（整体终审修复）"
 ```
+
+---
+
+### 验收发现修复（A: 助手文本 markdown 渲染；B: hot_refresh 原因透传）
+
+**背景**：用户浏览器验收（Task 12 前半段）整体通过，报了两个小问题：
+
+- **A**：助手回复里的 markdown 原生语法未解析（全项目无渲染器，气泡按 `pre-wrap` 纯文本输出）。
+- **B**：`hot_refresh` 总是返回空。取证结论：根因在数据侧 —— `keyword_groups = 0` 且 `hot_topics = 0`（无上期榜单可兜底）→ `seedKeywords()` 无种子词 → `collectHotTopicsForUser` 返回 `{ collected: 0, reason: "无种子关键词，请先配置关键词组" }`；而**执行器把 reason 吞掉了**（`skill-catalog.ts:271-275` 只回传 `collected`），卡片只剩「收录 0 条热点」，用户无法区分「没配关键词」与「采集失败」。（30 分钟的 `hot_topics_runner` 走同一路径，故也一直是空的。）
+
+用户已拍板：A 用 `react-markdown`（+`remark-gfm`，支持表格）；B 只修原因透传（不加默认种子词）。
+
+- [ ] **Step A1: 安装依赖**
+
+```bash
+npm install react-markdown remark-gfm
+```
+
+- [ ] **Step A2: `src/app/globals.css` 末尾追加 markdown 样式块**（项目既有的全局样式落点；只作用于 `.agent-markdown` 容器）
+
+```css
+/* Agent 助手气泡的 markdown（react-markdown 输出；只作用于 .agent-markdown 容器） */
+.agent-markdown {
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+.agent-markdown > :first-child {
+  margin-top: 0;
+}
+.agent-markdown > :last-child {
+  margin-bottom: 0;
+}
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3,
+.agent-markdown h4 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.agent-markdown p {
+  margin: 6px 0;
+}
+.agent-markdown ul,
+.agent-markdown ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.agent-markdown li {
+  margin: 2px 0;
+}
+.agent-markdown code {
+  background: #f5f5f5;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.agent-markdown pre {
+  margin: 6px 0;
+  padding: 8px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.agent-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.agent-markdown blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid #e6e6e6;
+  color: #666;
+}
+.agent-markdown table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  width: 100%;
+  font-size: 12px;
+}
+.agent-markdown th,
+.agent-markdown td {
+  border: 1px solid #e8e8e8;
+  padding: 4px 8px;
+  text-align: left;
+}
+.agent-markdown th {
+  background: #fafafa;
+}
+.agent-markdown hr {
+  border: none;
+  border-top: 1px solid #f0f0f0;
+  margin: 10px 0;
+}
+.agent-markdown a {
+  color: #386bff;
+}
+```
+
+- [ ] **Step A3: `message-bubble.tsx` 整文件替换**（助手走 markdown，用户保持纯文本）
+
+```tsx
+"use client";
+/**
+ * 用户 / 助手气泡
+ *
+ * created_at 是「朴素上海墙钟」字符串：直接切片 HH:mm 展示，不要 new Date() 解析。
+ * 助手文本按 markdown 渲染（react-markdown + remark-gfm：表格/列表/代码块等），
+ * 用户消息保持纯文本 —— 用户输入里的 `#` / `*` 不该被当语法解析。
+ * 样式在 globals.css 的 `.agent-markdown`（项目既有的全局样式落点）。
+ */
+import { Typography } from "antd";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+const { Text } = Typography;
+
+interface MessageBubbleProps {
+  role: "user" | "assistant";
+  text: string;
+  created_at: string;
+}
+
+export function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
+  const isUser = role === "user";
+  return (
+    <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: 12 }}>
+      <div style={{ maxWidth: "85%", minWidth: 0 }}>
+        <div
+          style={{
+            background: isUser ? "#386bff" : "#ffffff",
+            color: isUser ? "#ffffff" : "#1a1a1a",
+            border: isUser ? "none" : "1px solid #f0f0f0",
+            borderRadius: 10,
+            padding: "8px 12px",
+            fontSize: 13,
+            lineHeight: 1.7,
+            ...(isUser ? { whiteSpace: "pre-wrap", wordBreak: "break-word" } : {}),
+          }}
+        >
+          {isUser ? (
+            text
+          ) : (
+            <div className="agent-markdown">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+        <Text
+          type="secondary"
+          style={{ fontSize: 11, display: "block", marginTop: 2, textAlign: isUser ? "right" : "left" }}
+        >
+          {created_at.length >= 16 ? created_at.slice(11, 16) : ""}
+        </Text>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step B1: `skill-catalog.ts` 的 hot_refresh 执行器透传 reason**
+
+把：
+
+```ts
+      const result = await collectHotTopicsForUser({
+        userId,
+        adapterFactory: (cookies) => new XhsPcApiAdapter(cookies),
+      });
+      return { collected: result.collected };
+```
+
+换成：
+
+```ts
+      const result = await collectHotTopicsForUser({
+        userId,
+        adapterFactory: (cookies) => new XhsPcApiAdapter(cookies),
+      });
+      // reason 必须透传：它是「为什么 0 条」的唯一说明（无关键词组 / 无 Cookie / 采集无结果），
+      // 丢了它工具卡就只剩一句「收录 0 条热点」（浏览器验收发现的 P0 可诊断性缺陷）
+      return { collected: result.collected, snapshotTime: result.snapshotTime, reason: result.reason };
+```
+
+- [ ] **Step B2: hot_refresh 的 `summarize` 把原因带出来**
+
+把：
+
+```ts
+    summarize: (details) => `收录 ${summarizeCount(details.collected)} 条热点`,
+```
+
+换成：
+
+```ts
+    summarize: (details) => {
+      const collected = summarizeCount(details.collected);
+      if (collected > 0) return `收录 ${collected} 条热点`;
+      // 0 条时把原因带出来：否则用户无法区分「没配关键词组」与「采集失败」（验收发现）
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `收录 0 条热点${reason}`;
+    },
+```
+
+- [ ] **Step B3: 补一条 summarize 用例（`skill-catalog.test.ts`）**
+
+```ts
+  it("hot_refresh 的摘要：有产出给条数，0 条时带出原因", () => {
+    const hotRefresh = SKILL_CATALOG.find((definition) => definition.skillKey === "hot_refresh");
+    if (!hotRefresh) throw new Error("hot_refresh 不在目录里");
+    expect(hotRefresh.summarize({ collected: 12 })).toBe("收录 12 条热点");
+    expect(hotRefresh.summarize({ collected: 0 })).toBe("收录 0 条热点");
+    expect(hotRefresh.summarize({ collected: 0, reason: "无种子关键词，请先配置关键词组" })).toBe(
+      "收录 0 条热点（无种子关键词，请先配置关键词组）",
+    );
+  });
+```
+
+（若该测试文件已有的 hot_refresh 摘要断言与新行为冲突，按新行为更新它；`SKILL_CATALOG` 若未在该测试文件里 import，补上。）
+
+- [ ] **Step A4/B4: 验证 + 提交（两笔独立提交）**
+
+```bash
+npx tsc --noEmit        # 期望无输出
+npx vitest run          # 期望 26 文件 / 302 用例（含新用例）
+
+git add package.json package-lock.json src/app/globals.css src/components/agent/message-bubble.tsx
+git commit -m "feat(agent-ui): 助手文本按 markdown 渲染（react-markdown + remark-gfm）"
+
+git add src/lib/server/agent/skill-catalog.ts src/lib/server/agent/skill-catalog.test.ts
+git commit -m "fix(agent): hot_refresh 透传采集失败原因并在摘要带出（验收发现）"
+```
+
+**B 改了 P0 代码 → 按交接要求重跑 P0 端到端**（worker 与 dev server 由协调方在后台跑着）：
+
+```bash
+npx tsx src/scripts/agent-smoke.ts     # 期望「P0 验收全部通过」
+```
+
+---
+
+### Task 12: 浏览器端到端验收 + 全量回归 + 交接文档
+
+**Files:**
 - Create: `docs/superpowers/HANDOFF-agent-p1b.md`
 - Modify: `docs/superpowers/HANDOFF-agent-p1-remaining.md`（§一 状态行、§五 验收总清单）
 
