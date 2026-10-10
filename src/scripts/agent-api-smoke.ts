@@ -443,9 +443,13 @@ async function main(): Promise<void> {
     );
 
     // §4.3：tool_execution_end 的摘要由 SSE 出口补齐，前端只渲染不算。
-    // tool_execution_end 的帧未必都有对应的 agent_tool_calls 行：Pi 对「工具名不存在 /
-    // 参数校验失败 / 输出被 length 截断」这三种情况会在走钩子之前就短路（不落行、无摘要）。
-    // 因此只对「能对应到库中行」的帧断言摘要，另外要求整体至少有一帧有摘要（避免空跑通过）。
+    //
+    // 为什么断言要带「能对应到库中行」这个前提：Pi 对「工具名不存在 / 参数校验失败 /
+    // 输出被 length 截断」这三种情况会在走钩子之前就短路，这些调用本来不落行。
+    // 现在它们已由事件回填（agent-loop.mts 的 subscribe）补上审计行与摘要，
+    // 因此正常情况下每一帧都能对应到行；只有回填那次落库也失败时才会缺。
+    // 这里只对「有行」的帧断言摘要（否则 DB 抖动会让一次正确的运行被判失败），
+    // 另外要求整体至少有一帧有行有摘要（避免空跑通过）。
     const toolEndFrames = frames.filter((frame) => frame.type === "tool_execution_end");
     assert(toolEndFrames.length >= 1, "没有任何 tool_execution_end 帧（模型没调用工具，换个更能触发工具的提问）");
     const rowToolCallIds = new Set(

@@ -62,7 +62,9 @@ P1 的 A 块做完了：Agent 的中间过程文本现在会落库（D23），8 
 1. **`messages` 只含 user 消息** —— 助手文本一律从 `events`（历史）与 SSE（实时）来。最终答复同时存在于 `agent_messages` 与 `message_end` 事件里，`messages` 若也返回 assistant 行，同一段话会渲染两遍。
 2. **`events` 里不含 artifact、也不含 tool_execution_\*** —— 工件只认 `artifacts` 字段，工具卡只认 `tool_calls`（按 `tool_call_id` 归并，见设计稿 §5.3）。`tool_calls` **不按 status 过滤**，可能含 `running` 行 —— 这正是跨边界归并需要的（设计稿 §5.3 的「start 早于分界、end 晚于分界」情形）。
 3. **`message_end` 的 `payload.text` 是可选的** —— 渲染前必须同时判定 `payload.role === "assistant"` 与 `text` 非空，否则会出空白气泡（Pi 对 user / toolResult / system 也发 message_end，且升级前落库的旧行是 `{role, trimmed:true}`）。
-4. **有些 `tool_execution_end` 帧既没有 summary、也没有对应的 `tool_calls` 行** —— Pi 在三种情况下会在走钩子**之前**就短路，因此不落库、无摘要：① 模型幻觉出不存在的工具名；② 参数 schema 校验失败；③ 输出被 `length` 截断。B 块遇到这种帧要么按「未记录」降级显示（有 toolCallId 无摘要），要么忽略 —— 但**不能假定每帧都有卡片、也不能假定每张卡都有摘要**。（P0 设计文档要求「P1 由事件回填」这类行，本批未做，见 §七 遗留项。）
+4. **每个工具调用都会有行、有摘要** —— Pi 在三种情况下会在走钩子**之前**就短路（① 模型幻觉出不存在的工具名；② 参数 schema 校验失败；③ 输出被 `length` 截断），这些调用不经过 `beforeToolCall`/`afterToolCall`。**已由事件回填解决**：`agent-loop.mts` 的 `subscribe` 在 `tool_execution_end` 上用事件载荷补一行（`errorType: "not_executed"`、摘要形如「未执行：Tool xxx not found」）。
+
+   仍要防的**唯一情况**是回填那次落库也失败（DB 异常）—— 此时该帧确实没有行。B 块按 toolCallId 归并时应容忍「有帧无卡」，不要假设帧与卡片一一对应。
 
 `*_truncated` 三个标记：达到上限即置位（**恰好等于上限时是假阳性**：events 1000 / tool_calls 200 / artifacts 200，取的都是**最新**那批，丢的是更早的）。
 
@@ -141,8 +143,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 |---|---|
 | `POST /messages` 的并发保护是 TOCTOU | 两个并发 POST 可能都通过检查（窗口毫秒级）。无部分唯一索引可用（`db push` 管不了 partial unique index）；前端在运行中禁用输入框已覆盖常见场景 |
 | DELETE 与 `POST /messages` 存在竞态 | 极端时序下可能留下孤儿**事件行与 Task 行**（`tasks` 表没有清理者，比事件行更值得注意），或让 `finishRun` 抛一次错（worker 现在会打日志，不再静默） |
-| **「阻断」这种工具卡状态在 P1 生产不可达** | 设计稿 §7.2 要求 4 种状态（运行中/成功/失败/阻断）都渲染正确，但要产生阻断数据需要：工具名在目录外（会被 Pi 在 `beforeToolCall` 之前短路，不落库）或目录里有 `publish` 级技能（当前 6 个都不是）。**B 块照实现即可，但验收时演示不出来**；`buildToolCallSummary` 的三条分支只在单测层面覆盖 |
-| 无 DB 行的 `tool_execution_end` 帧 | 见 §三 渲染规则 4。P0 设计文档（§1218 行）要求「P1 由事件回填」这类调用，**本批未做**，登记在 §七 |
+| **「阻断」这种工具卡状态在 P1 生产不可达** | 设计稿 §7.2 要求 4 种状态（运行中/成功/失败/阻断）都渲染正确，但要产生阻断数据需要目录里有 `publish` 级技能（当前 6 个都不是）；「工具名在目录外」已被 Pi 在 `beforeToolCall` 之前短路 → 走的是「未执行」回填而非阻断。**B 块照实现即可，但验收时演示不出来** |
+| 被中止的调用可能永远停在 `running` | 若 `beforeToolCall` 已落 running 行、而该调用因中止（超时 / 连续失败中止）没走到 `afterToolCall`，那行的 `rowId != null` 会让回填跳过它 → 卡片永远显示「运行中」。窗口很窄（P1 的取消只作用于 pending，触发源是墙钟超时），暂登记不修 |
 | SSE 推送全部事件类型 | 一次运行约 1400 帧里绝大多数是 `message_update`/`message_start` 噪声（载荷只有 `{role, trimmed}`）。B 块必须忽略未知类型。**若日后要在服务端按类型过滤，别把 `agent_end` 滤掉** —— 它是前端唯一可靠的结束信号 |
 | SSE 无并发连接上限 | 每个连接每 500ms 一次查询。单机自用够用；多实例/多标签页场景需限流（P2） |
 | 首屏 `result` 截断到 4000 字符 | 超出部分以 `result_truncated: true` 标记，展开只能看到前 4000 字符。`params` **未截断**（工具参数由模型按 schema 产出，体积可控） |
@@ -153,12 +155,6 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 ---
 
 ## 七、遗留项
-
-### 7.0 「事件回填」缺失的工具调用行（P0 设计文档要求，不属于 C 也不属于 B）
-
-P0 设计文档要求：对「工具名不存在 / 参数校验失败 / 输出被 length 截断」这三种**没走钩子**的调用，由 P1 在事件侧回填 `agent_tool_calls` 行。P1-A 没做。后果与影响面见 §三 渲染规则 4 与 §六。
-
-归属未定 —— 它既不是 C 块（7 个业务工具）也不是 B 块（前端），更像 loop 侧的健壮性补强。**开工前先决定它归谁**，否则会一直悬着。实现思路：在 `agent-loop.mts` 的 `subscribe` 里，`tool_execution_end` 且 `toolCallRows` 里没有对应条目时，用事件里的 `toolCallId/toolName/result/isError/durationMs` 补落一行（`toolCallRows` 已经是内存里的 Map，不需要额外查库）。
 
 ### 7.1 C 块：7 个新工具（设计稿 §六）
 
@@ -190,4 +186,6 @@ CLAUDE.md 原则 4 要求维护一份总的项目代码文档，**P0 起就一�
 | **多次写入要么同事务，要么会留下不可修复的不一致**：本轮修了两处（`cancelPendingRun` 的三步写入、`createRunForMessage` 的 Task+Run+会话状态） | `agent-service.ts` |
 | **`message_end` 载荷的 `text` 是可选字段**：Pi 对所有角色都发 message_end，渲染方必须判 `role === "assistant"` | `stream-events.ts` 的注释 |
 | **SSE 的 `id > lastId` 天然就是断线重连语义**，`latest_event_id` 一个值同时解决了「首屏与订阅的时间窗」与「刷新后不重复渲染」 | 设计稿 §4.4 |
+| **回填/补写必须在「事件行落库」之前完成**：SSE 出口是「查到事件行就转发」，转发那一刻才查 `agent_tool_calls` 补摘要 —— 先把事件行写下去就会留下「帧已发出、行还没写完」的窗口，且 `lastId` 前移后该帧永不重发（客户端永久缺摘要） | `agent-loop.mts` 的 `subscribe` 注释 |
+| **`tool_execution_start` 在任何钩子之前发出**（Pi 源码 `agent-loop.js:377`），所以「每个调用的序号」要在它上面分配 —— 短路调用不进钩子，序号在钩子里分配会让 `step_index` 不连续（P0 验收脚本会断言连续性） | `agent-loop.mts` 的 `toolCallRows` 注释 |
 | **`Promise.allSettled` 会静默吞掉异常**：不逐条检查 rejected，Run 执行的异常会完全消失在日志里 | `worker/index.mts` 的 `agentRunRunner` |
