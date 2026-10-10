@@ -14,6 +14,7 @@
  * 它们每次渲染都会变，写进依赖会导致「每一帧都重连」。用「最新值 ref」模式：
  * 渲染期同步、重连时读取；重连只由 conversationId（会话切换/快照同步完成）与
  * streamKey（发送消息后、快照替换后主动重启）触发。
+ * **不要**把 ref 同步改回 useEffect、更不要把值加进依赖数组 —— 后者会让每帧重连。
  */
 import { useEffect, useRef } from "react";
 
@@ -53,18 +54,21 @@ export function useAgentEvents(options: UseAgentEventsOptions): void {
     const controller = new AbortController();
     let disposed = false;
 
-    /** 可被 cleanup 中断的等待（卸载后不残留定时器） */
+    /**
+     * 可被 cleanup 中断的等待：正常结束时就地摘掉 abort 监听 —— 只依赖 { once: true }
+     * 时监听器要等 abort 才移除，持续断线会让它按重连频率线性累积（且无任何告警）。
+     */
     const sleep = (ms: number): Promise<void> =>
       new Promise((resolve) => {
-        const timer = setTimeout(resolve, ms);
-        controller.signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true },
-        );
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          controller.signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, ms);
+        controller.signal.addEventListener("abort", onAbort, { once: true });
       });
 
     const readStreamOnce = async (): Promise<void> => {
@@ -77,15 +81,27 @@ export function useAgentEvents(options: UseAgentEventsOptions): void {
 
       if (response.status === 401) {
         // 长连接期间 access token 可能过期：刷新一次，交给外层循环重连。
-        // 刷新失败（refresh token 也没了）就停流，交给路由守卫跳登录。
+        // 刷新失败就停流（fail-safe）：注意**路由守卫不会因此重定向** —— clearAuthTokens()
+        // 不通知 use-auth，守卫只在重新 bootstrap 时才会判到未登录。所以这里的实际用户可见
+        // 行为是「SSE 停止、页面其余部分照旧」，恢复手段是手动刷新页面（登记在交接文档）。
         try {
           await refreshAccessToken();
         } catch {
+          console.warn("[agent] 登录状态刷新失败，SSE 已停止；刷新页面可恢复");
           disposed = true;
         }
         return;
       }
+      if (response.status === 404 || response.status === 403) {
+        // 会话已不存在 / 无权访问（例如在另一个标签页被删除）：停流，别做无谓的空转重连
+        disposed = true;
+        return;
+      }
       if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
+      // 非 SSE 响应（例如 dev 环境返回了错误页）会让解析器一帧都拿不到、只剩静默重连 —— 提前给出可读原因
+      if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new Error(`SSE 响应不是事件流：${response.headers.get("content-type") ?? "无 Content-Type"}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
