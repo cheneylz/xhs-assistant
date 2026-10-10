@@ -184,22 +184,31 @@ describe("library_note_detail", () => {
 });
 
 describe("content_titles", () => {
-  it("正常生成：返回 titles 与 count，count 让下游工具可以直接消费", async () => {
+  it("正常生成：返回 titles 与 count，且参数按契约转发（title/body/count）", async () => {
+    const generateTitles = vi.fn(async () => ["标题A", "标题B", "标题C"]);
     const result = await executeSkill(
       "content_titles",
       { title: "露营装备清单", body: "正文", count: 3 },
-      makeModelContext({ generateTitles: vi.fn(async () => ["标题A", "标题B", "标题C"]) }),
+      makeModelContext({ generateTitles }),
     );
     expect(result.titles).toEqual(["标题A", "标题B", "标题C"]);
     expect(result.count).toBe(3);
     expect(result.reason).toBeUndefined();
+    // case 的核心职责就是 params → textClient 的参数映射：光断返回值抓不到映射写错
+    expect(generateTitles).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "露营装备清单", body: "正文", count: 3 }),
+    );
   });
 
-  it("未配置模型 / 缺 title 都抛可读错误（不触达 textClient）", async () => {
+  it("未配置模型 / 缺 title（含纯空白）都抛可读错误（不触达 textClient）", async () => {
     await expect(executeSkill("content_titles", { title: "T" }, makeContext())).rejects.toThrow(
       "未配置文本模型，无法生成标题",
     );
     await expect(executeSkill("content_titles", {}, makeModelContext({}))).rejects.toThrow("缺少标题（title）参数");
+    // trim 是 title 校验里唯一有真实分支价值的一行，单独钉住
+    await expect(executeSkill("content_titles", { title: "   " }, makeModelContext({}))).rejects.toThrow(
+      "缺少标题（title）参数",
+    );
   });
 
   it("count 参数被钳制在 1..10 后才传给 textClient", async () => {
@@ -231,11 +240,14 @@ describe("content_tags", () => {
     expect(result.count).toBe(2);
   });
 
-  it("未配置模型 / 缺 title 都抛可读错误", async () => {
+  it("未配置模型 / 缺 title（含纯空白）都抛可读错误", async () => {
     await expect(executeSkill("content_tags", { title: "T" }, makeContext())).rejects.toThrow(
       "未配置文本模型，无法生成标签",
     );
     await expect(executeSkill("content_tags", {}, makeModelContext({}))).rejects.toThrow("缺少标题（title）参数");
+    await expect(executeSkill("content_tags", { title: "   " }, makeModelContext({}))).rejects.toThrow(
+      "缺少标题（title）参数",
+    );
   });
 
   it("count 参数被钳制在 1..20 后才传给 textClient，空结果带 reason", async () => {
@@ -243,5 +255,66 @@ describe("content_tags", () => {
     const result = await executeSkill("content_tags", { title: "T", count: 999 }, makeModelContext({ generateTags }));
     expect(generateTags).toHaveBeenCalledWith(expect.objectContaining({ count: 20 }));
     expect(result.reason).toBe("模型未返回可用标签");
+  });
+});
+
+describe("content_rewrite", () => {
+  it("正常改写：只更新正文，返回 draft_id/title/length", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "露营装备清单", body: "旧正文" });
+    mocks.draftUpdate.mockResolvedValue({ id: 12, title: "露营装备清单", body: "新正文" });
+    const rewriteNote = vi.fn(async () => "新正文");
+    const result = await executeSkill(
+      "content_rewrite",
+      { draft_id: 12, instruction: "更口语化", intensity: "deep" },
+      makeModelContext({ rewriteNote }),
+    );
+    expect(mocks.draftFindFirst).toHaveBeenCalledWith({ where: { id: 12, userId: 7 } });
+    expect(rewriteNote).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "露营装备清单", body: "旧正文", instruction: "更口语化", intensity: "deep" }),
+    );
+    // 只改 body —— 标题与归属不能被改写破坏
+    expect(mocks.draftUpdate).toHaveBeenCalledWith({ where: { id: 12 }, data: { body: "新正文" } });
+    expect(result).toEqual({ draft_id: 12, title: "露营装备清单", length: 3 });
+  });
+
+  it("intensity 非法或缺省时回退 medium（模型可能给任意字符串）", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "B" });
+    mocks.draftUpdate.mockResolvedValue({ id: 12, title: "T", body: "N" });
+    const rewriteNote = vi.fn(async () => "N");
+    await executeSkill("content_rewrite", { draft_id: 12, intensity: "extreme" }, makeModelContext({ rewriteNote }));
+    expect(rewriteNote).toHaveBeenCalledWith(expect.objectContaining({ intensity: "medium" }));
+    await executeSkill("content_rewrite", { draft_id: 12 }, makeModelContext({ rewriteNote }));
+    expect(rewriteNote).toHaveBeenLastCalledWith(expect.objectContaining({ intensity: "medium" }));
+  });
+
+  it("未配置模型 / 缺 draft_id / 草稿不存在都抛可读错误，且不写库", async () => {
+    await expect(executeSkill("content_rewrite", { draft_id: 12 }, makeContext())).rejects.toThrow(
+      "未配置文本模型，无法改写草稿",
+    );
+    await expect(executeSkill("content_rewrite", {}, makeModelContext({}))).rejects.toThrow("缺少草稿（draft_id）参数");
+    mocks.draftFindFirst.mockResolvedValue(null);
+    await expect(executeSkill("content_rewrite", { draft_id: 99 }, makeModelContext({}))).rejects.toThrow(
+      "草稿 99 不存在",
+    );
+    expect(mocks.draftUpdate).not.toHaveBeenCalled();
+  });
+
+  it("改写失败时不写库（先成功再覆盖，失败保留原文）", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "旧" });
+    const rewriteNote = vi.fn(async () => {
+      throw new Error("模型超时");
+    });
+    await expect(
+      executeSkill("content_rewrite", { draft_id: 12 }, makeModelContext({ rewriteNote })),
+    ).rejects.toThrow("模型超时");
+    expect(mocks.draftUpdate).not.toHaveBeenCalled();
+  });
+
+  it("改写返回空内容时不写库（空串绝不能覆盖用户正文）", async () => {
+    mocks.draftFindFirst.mockResolvedValue({ id: 12, title: "T", body: "旧正文" });
+    const rewriteNote = vi.fn(async () => "   ");
+    const result = await executeSkill("content_rewrite", { draft_id: 12 }, makeModelContext({ rewriteNote }));
+    expect(mocks.draftUpdate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ draft_id: 12, length: 0, reason: "模型返回空内容，原文未改动" });
   });
 });

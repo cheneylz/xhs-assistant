@@ -738,6 +738,31 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       if (tags.length === 0) return { tags, count: 0, reason: "模型未返回可用标签" };
       return { tags, count: tags.length };
     }
+    case "content_rewrite": {
+      if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法改写草稿");
+      const draftId = Number(params.draft_id);
+      if (!draftId) throw new Error("缺少草稿（draft_id）参数");
+      const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
+      if (!draft) throw new Error(`草稿 ${draftId} 不存在`);
+      // 强度只认三档，非法值回退 medium（与路由侧 zod 枚举同口径）
+      const intensity = params.intensity === "light" || params.intensity === "deep" ? params.intensity : "medium";
+      const body = await textClient.rewriteNote({
+        modelConfig,
+        apiKey,
+        onUsage: makeUsageLogger(userId, modelConfig.modelName),
+        title: draft.title,
+        body: draft.body,
+        instruction: typeof params.instruction === "string" ? params.instruction : "",
+        intensity,
+      });
+      // 顺序很重要：先拿到改写结果再覆盖，失败时草稿保持原样（无撤销，不能让失败把正文清空）
+      // 空内容同理：模型可能返回空串/纯空白，绝不能用它覆盖用户正文（唯一破坏性工具）
+      if (!body.trim()) {
+        return { draft_id: draft.id, title: draft.title, length: 0, reason: "模型返回空内容，原文未改动" };
+      }
+      const updated = await prisma.aiDraft.update({ where: { id: draft.id }, data: { body } });
+      return { draft_id: updated.id, title: updated.title, length: body.length };
+    }
     default: {
       // 过渡期护栏：注册表种子（ensureUserSkills）会让这些 key 落进 LLM 兜底、产出假结果 —— 宁可响亮失败
       if (INTERIM_UNIMPLEMENTED_SKILLS.has(skillKey)) {
