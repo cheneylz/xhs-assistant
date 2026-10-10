@@ -252,7 +252,7 @@ export default function LoginPage() {
 
                 {error && (
                   <Alert
-                    message={error}
+                    title={error}
                     type="error"
                     showIcon
                     style={{ marginBottom: 16 }}
@@ -267,7 +267,7 @@ export default function LoginPage() {
                   loading={isSubmitting}
                   disabled={auth.isChecking}
                   icon={<ArrowRightOutlined />}
-                  iconPosition="end"
+                  iconPlacement="end"
                 >
                   {mode === "login" ? "进入工作台" : "创建并进入"}
                 </Button>

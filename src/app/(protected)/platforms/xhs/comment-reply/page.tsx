@@ -252,7 +252,7 @@ export default function CommentReplyPage() {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="系统每分钟检测已发布笔记的新评论（需绑定 PC 账号），生成回复建议后进入此队列，回复前请人工确认。"
+          title="系统每分钟检测已发布笔记的新评论（需绑定 PC 账号），生成回复建议后进入此队列，回复前请人工确认。"
         />
         <Table<CommentReply>
           rowKey="id"

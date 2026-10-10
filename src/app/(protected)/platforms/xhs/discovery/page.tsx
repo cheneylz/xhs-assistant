@@ -216,7 +216,7 @@ export default function XhsDiscoveryPage() {
             <Col><Button icon={<SearchOutlined />} loading={isFetchingUrl} disabled={noPcAccount} onClick={handleFetchUrlDetail}>URL 直查</Button></Col>
           </Row>
         </form>
-        {error && <Alert message={error} type="error" showIcon style={{ marginTop: 12 }} closable onClose={() => setError(null)} />}
+        {error && <Alert title={error} type="error" showIcon style={{ marginTop: 12 }} closable onClose={() => setError(null)} />}
         {noPcAccount && <Empty description="还没有可用的 PC 账号" style={{ marginTop: 24 }}><Link href="/platforms/xhs/accounts"><Button type="primary" icon={<LinkOutlined />}>去绑定账号</Button></Link></Empty>}
       </Card>
 
@@ -256,7 +256,7 @@ export default function XhsDiscoveryPage() {
                         </Button>
                         {originalUrl && <Button size="small" icon={<LinkOutlined />} href={originalUrl} target="_blank" rel="noreferrer" onClick={stopCardClick}>原文</Button>}
                       </div>
-                      {commentPreviewErrors[note.note_id] && <Alert message={commentPreviewErrors[note.note_id]} type="error" style={{ marginTop: 8, fontSize: 12 }} showIcon />}
+                      {commentPreviewErrors[note.note_id] && <Alert title={commentPreviewErrors[note.note_id]} type="error" style={{ marginTop: 8, fontSize: 12 }} showIcon />}
                       {commentPreviewByNoteId[note.note_id] && (
                         <div style={{ marginTop: 8, borderTop: "1px solid #e8e8e8", paddingTop: 8 }} onClick={stopCardClick}>
                           {commentPreviewByNoteId[note.note_id].length === 0 ? <Text type="secondary" style={{ fontSize: 12 }}>暂无评论</Text> : null}
@@ -286,11 +286,11 @@ export default function XhsDiscoveryPage() {
         )}
       </Card>
 
-      <Drawer title={selectedNote?.title || "笔记详情"} open={!!selectedNote} onClose={closeDetail} width={640} styles={{ body: { background: "#ffffff" } }}>
+      <Drawer title={selectedNote?.title || "笔记详情"} open={!!selectedNote} onClose={closeDetail} size={640} styles={{ body: { background: "#ffffff" } }}>
         {selectedNote && (
           <div>
             {isFetchingDetail && <Spin style={{ display: "block", textAlign: "center", margin: "16px 0" }} />}
-            {detailError && <Alert message={detailError} type="warning" showIcon style={{ marginBottom: 12 }} />}
+            {detailError && <Alert title={detailError} type="warning" showIcon style={{ marginBottom: 12 }} />}
             {selVideoUrl && getNoteKindLabel(selectedNote) === "视频" ? (
               <div style={{ marginBottom: 16 }}>
                 <div style={{ position: "relative", background: "#f2f2f2", borderRadius: 8, overflow: "hidden" }}>
@@ -349,7 +349,7 @@ export default function XhsDiscoveryPage() {
               {getPreviewNoteUrl(selectedNote) && <Button type="primary" icon={<LinkOutlined />} href={getPreviewNoteUrl(selectedNote)} target="_blank" rel="noreferrer">打开原文</Button>}
             </Space>
 
-            {commentPreviewErrors[selectedNote.note_id] && <Alert message={commentPreviewErrors[selectedNote.note_id]} type="error" showIcon style={{ marginBottom: 12 }} />}
+            {commentPreviewErrors[selectedNote.note_id] && <Alert title={commentPreviewErrors[selectedNote.note_id]} type="error" showIcon style={{ marginBottom: 12 }} />}
             {commentPreviewByNoteId[selectedNote.note_id] && (
               <Card size="small" title="评论预览" style={{ background: "#ffffff" }}>
                 {commentPreviewByNoteId[selectedNote.note_id].length === 0 ? <Text type="secondary">暂无评论</Text> : null}

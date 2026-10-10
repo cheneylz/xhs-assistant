@@ -24,7 +24,7 @@ function CheckingSpin() {
         background: "#f5f5f5",
       }}
     >
-      <Spin size="large" tip="正在验证登录状态..." />
+      <Spin size="large" description="正在验证登录状态..." />
     </div>
   );
 }

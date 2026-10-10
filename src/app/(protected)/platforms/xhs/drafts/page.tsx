@@ -623,7 +623,7 @@ export default function XhsDraftsPage() {
             <VideoCameraOutlined /> 视频素材 ({videoAssets.length})
           </Text>
         </div>
-        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+        <Space orientation="vertical" size={4} style={{ width: "100%" }}>
           {videoAssets.map((asset) => (
             <div
               key={asset.id}
@@ -689,7 +689,7 @@ export default function XhsDraftsPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           onClose={() => setError(null)}
@@ -698,7 +698,7 @@ export default function XhsDraftsPage() {
       {message && (
         <Alert
           type="success"
-          message={message}
+          title={message}
           showIcon
           closable
           onClose={() => setMessage(null)}
@@ -734,7 +734,7 @@ export default function XhsDraftsPage() {
                     style={{ fontSize: 40, color: "#8f8f8f" }}
                   />
                 }
-                imageStyle={{ height: 56 }}
+                styles={{ image: { height: 56 } }}
                 description={
                   <Paragraph type="secondary">
                     还没有草稿，请从内容库或 AI 工坊创建。
@@ -923,7 +923,7 @@ export default function XhsDraftsPage() {
                               <img src={asset.url || asset.local_path} style={{ width: 140, height: 140, objectFit: "cover", borderRadius: 6 }} referrerPolicy="no-referrer" />
                             ) : (
                               <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <Space direction="vertical" align="center"><PlayCircleOutlined style={{ fontSize: 32, color: "#386bff" }} /><Text style={{ fontSize: 12 }}>视频</Text></Space>
+                                <Space orientation="vertical" align="center"><PlayCircleOutlined style={{ fontSize: 32, color: "#386bff" }} /><Text style={{ fontSize: 12 }}>视频</Text></Space>
                               </div>
                             )}
                           </div>
@@ -972,7 +972,7 @@ export default function XhsDraftsPage() {
                             style={{ marginBottom: 12 }}
                             disabled={isOptimizing}
                           />
-                          <Space direction="vertical" style={{ width: "100%" }} size={8}>
+                          <Space orientation="vertical" style={{ width: "100%" }} size={8}>
                             <Button
                               block
                               type="primary"

@@ -240,7 +240,7 @@ export default function XhsKeywordsPage() {
       {message && (
         <Alert
           type="info"
-          message={message}
+          title={message}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -249,7 +249,7 @@ export default function XhsKeywordsPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -258,7 +258,7 @@ export default function XhsKeywordsPage() {
 
       {isLoading ? (
         <div style={{ textAlign: "center", padding: 48 }}>
-          <Spin tip="正在加载关键词组..." />
+          <Spin description="正在加载关键词组..." />
         </div>
       ) : groups.length === 0 ? (
         <Card style={{ background: "#ffffff", borderColor: "#e8e8e8" }}>
@@ -289,14 +289,14 @@ export default function XhsKeywordsPage() {
                         title="命中"
                         value={detail?.trend.total_matches ?? 0}
                         suffix="条"
-                        valueStyle={{ fontSize: 16 }}
+                        styles={{ content: { fontSize: 16 } }}
                       />
                     </Col>
                     <Col span={8}>
                       <Statistic
                         title="互动"
                         value={detail?.trend.total_engagement ?? 0}
-                        valueStyle={{ fontSize: 16 }}
+                        styles={{ content: { fontSize: 16 } }}
                       />
                     </Col>
                     <Col span={8}>
@@ -304,7 +304,7 @@ export default function XhsKeywordsPage() {
                         title="关键词"
                         value={group.keywords.length}
                         suffix="个"
-                        valueStyle={{ fontSize: 16 }}
+                        styles={{ content: { fontSize: 16 } }}
                       />
                     </Col>
                   </Row>

@@ -390,11 +390,11 @@ export default function XhsLibraryPage() {
             </Popconfirm>
             <Button disabled={!selectedNoteIds.length} onClick={clearSelection} size="small">清空选择</Button>
           </Space>
-          {batchActionMessage && <Alert message={batchActionMessage} type="info" showIcon style={{ marginTop: 8 }} closable onClose={() => setBatchActionMessage(null)} />}
+          {batchActionMessage && <Alert title={batchActionMessage} type="info" showIcon style={{ marginTop: 8 }} closable onClose={() => setBatchActionMessage(null)} />}
         </Card>
       )}
 
-      {error && <Alert message={error} type="error" showIcon style={{ marginBottom: 16 }} />}
+      {error && <Alert title={error} type="error" showIcon style={{ marginBottom: 16 }} />}
 
       {isLoading ? <Spin size="large" style={{ display: "block", textAlign: "center", margin: "48px 0" }} /> : notes.length === 0 ? (
         <Empty description="内容库还是空的"><Link href="/platforms/xhs/discovery"><Button type="primary" icon={<BookOutlined />}>去发现笔记</Button></Link></Empty>
@@ -447,11 +447,11 @@ export default function XhsLibraryPage() {
         </Row>
       )}
 
-      <Drawer title={selectedNote?.title || "笔记详情"} open={isDetailOpen} onClose={closeDetail} width={640} styles={{ body: { background: "#ffffff" } }}>
+      <Drawer title={selectedNote?.title || "笔记详情"} open={isDetailOpen} onClose={closeDetail} size={640} styles={{ body: { background: "#ffffff" } }}>
         {selectedNote && (
           <Spin spinning={isDetailLoading}>
-            {detailError && <Alert message={detailError} type="warning" showIcon style={{ marginBottom: 12 }} />}
-            {detailActionMessage && <Alert message={detailActionMessage} type="success" showIcon style={{ marginBottom: 12 }} closable onClose={() => setDetailActionMessage(null)} />}
+            {detailError && <Alert title={detailError} type="warning" showIcon style={{ marginBottom: 12 }} />}
+            {detailActionMessage && <Alert title={detailActionMessage} type="success" showIcon style={{ marginBottom: 12 }} closable onClose={() => setDetailActionMessage(null)} />}
 
             <Descriptions column={1} size="small" style={{ marginBottom: 16 }}>
               <Descriptions.Item label="作者">{getAuthorProfileUrl(selectedNote) ? <Typography.Link href={getAuthorProfileUrl(selectedNote)} target="_blank" rel="noreferrer">{selectedNote.author_name || "未知"}</Typography.Link> : (selectedNote.author_name || "未知")}</Descriptions.Item>
@@ -500,7 +500,7 @@ export default function XhsLibraryPage() {
             <Button onClick={toggleComments} style={{ marginBottom: 8 }}>{isCommentsOpen ? "收起评论" : `查看评论 (${commentsTotal})`}</Button>
             {isCommentsOpen && (
               <Card size="small" style={{ background: "#ffffff" }}>
-                {commentsError && <Alert message={commentsError} type="error" showIcon style={{ marginBottom: 8 }} />}
+                {commentsError && <Alert title={commentsError} type="error" showIcon style={{ marginBottom: 8 }} />}
                 {isCommentsLoading && <Spin size="small" />}
                 {topLevelComments.length === 0 && !isCommentsLoading ? <Text type="secondary">暂无评论</Text> : null}
                 {topLevelComments.map((c) => (

@@ -271,7 +271,7 @@ export default function PlannerPage() {
         description="全站热点洞察、爆款结构拆解与智能选题推荐，热点榜单每 30 分钟自动更新（估算数据）。"
       />
 
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         {/* P-01 热点榜单 */}
         <Card
           title={
@@ -302,7 +302,7 @@ export default function PlannerPage() {
               type="info"
               showIcon
               style={{ marginBottom: 12 }}
-              message="暂无热点数据：需绑定 PC 账号并配置关键词组，点击「立即刷新」手动采集"
+              title="暂无热点数据：需绑定 PC 账号并配置关键词组，点击「立即刷新」手动采集"
             />
           )}
           <Table<HotTopicEntry>
@@ -485,7 +485,7 @@ export default function PlannerPage() {
       </Space>
 
       {/* 关键词热度趋势 */}
-      <Drawer title={`热度趋势：${historyDrawer?.keyword ?? ""}`} open={Boolean(historyDrawer)} onClose={() => setHistoryDrawer(null)} width={420}>
+      <Drawer title={`热度趋势：${historyDrawer?.keyword ?? ""}`} open={Boolean(historyDrawer)} onClose={() => setHistoryDrawer(null)} size={420}>
         {historyDrawer && (
           <List
             size="small"
@@ -512,7 +512,7 @@ export default function PlannerPage() {
       >
         {reportDetail ? (
           <Spin spinning={false}>
-            <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+            <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
               <ReportSection title="📝 标题公式" items={reportDetail.title_patterns} />
               <ReportSection title="🖼️ 封面要素" items={reportDetail.cover_patterns} />
               <ReportSection title="📄 正文框架" items={reportDetail.body_patterns} />

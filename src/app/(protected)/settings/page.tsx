@@ -132,7 +132,7 @@ function KnowledgeBaseCard() {
       }
     >
       {!kb ? (
-        <Alert type="info" showIcon message="加载中…" />
+        <Alert type="info" showIcon title="加载中…" />
       ) : (
         <Form layout="vertical">
           <Row gutter={16}>

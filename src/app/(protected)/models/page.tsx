@@ -232,7 +232,7 @@ export default function ModelConfigPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="推荐的 OpenAI 兼容 API 服务"
+        title="推荐的 OpenAI 兼容 API 服务"
         description={<>
           <Typography.Link href="https://api.openai-next.com/" target="_blank" rel="noreferrer">api.openai-next.com</Typography.Link> — OpenAI 中转，Base URL: <Typography.Text code>https://api.openai-next.com/v1</Typography.Text><br />
           <Typography.Link href="https://www.volcengine.com/product/doubao" target="_blank" rel="noreferrer">火山引擎（豆包）</Typography.Link> — 字节跳动大模型平台，Base URL: <Typography.Text code>https://ark.cn-beijing.volces.com/api/v3</Typography.Text><br />
@@ -243,7 +243,7 @@ export default function ModelConfigPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -252,7 +252,7 @@ export default function ModelConfigPage() {
       {message && (
         <Alert
           type="success"
-          message={message}
+          title={message}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -302,7 +302,7 @@ export default function ModelConfigPage() {
                     placeholder="例如：默认文本模型"
                   />
                 </Form.Item>
-                <Alert message="所有模型需兼容 OpenAI 接口规范" type="info" style={{ marginBottom: 16, fontSize: 12 }} />
+                <Alert title="所有模型需兼容 OpenAI 接口规范" type="info" style={{ marginBottom: 16, fontSize: 12 }} />
                 <Form.Item label="模型名称">
                   <Input
                     value={form.model_name}
@@ -383,7 +383,7 @@ export default function ModelConfigPage() {
                 >
                   {isLoading ? (
                     <div style={{ textAlign: "center", padding: 24 }}>
-                      <Spin tip="正在加载配置..." />
+                      <Spin description="正在加载配置..." />
                     </div>
                   ) : grouped[type].length === 0 ? (
                     <Empty
@@ -402,7 +402,7 @@ export default function ModelConfigPage() {
                     />
                   ) : (
                     <Space
-                      direction="vertical"
+                      orientation="vertical"
                       style={{ width: "100%" }}
                       size="middle"
                     >

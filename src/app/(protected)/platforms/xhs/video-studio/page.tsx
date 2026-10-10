@@ -285,10 +285,10 @@ export default function XhsVideoStudioPage() {
       />
 
       {error && (
-        <Alert type="error" message={error} showIcon closable onClose={() => setError(null)} style={{ marginBottom: 16 }} />
+        <Alert type="error" title={error} showIcon closable onClose={() => setError(null)} style={{ marginBottom: 16 }} />
       )}
       {message && (
-        <Alert type="success" message={message} showIcon closable onClose={() => setMessage(null)} style={{ marginBottom: 16 }} />
+        <Alert type="success" title={message} showIcon closable onClose={() => setMessage(null)} style={{ marginBottom: 16 }} />
       )}
 
       {/* ---- 顶部：选中素材的检测结果与处理工具 ---- */}
@@ -320,7 +320,7 @@ export default function XhsVideoStudioPage() {
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请从素材库选择视频后开始检测" style={{ padding: 24 }} />
             ) : isDetecting ? (
               <div style={{ textAlign: "center", padding: 24 }}>
-                <Spin tip="正在解析视频规格..." />
+                <Spin description="正在解析视频规格..." />
               </div>
             ) : !detection ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未检测，点击「重新检测」开始" style={{ padding: 24 }} />
@@ -351,7 +351,7 @@ export default function XhsVideoStudioPage() {
                   <Alert
                     key={item.key}
                     type={item.level === "error" ? "error" : "warning"}
-                    message={item.message}
+                    title={item.message}
                     showIcon
                     icon={item.level === "error" ? <ExclamationCircleOutlined /> : <WarningOutlined />}
                     style={{ marginBottom: 8 }}
@@ -569,7 +569,7 @@ export default function XhsVideoStudioPage() {
         </Dragger>
         {isLoading ? (
           <div style={{ textAlign: "center", padding: 48 }}>
-            <Spin tip="正在加载视频素材..." />
+            <Spin description="正在加载视频素材..." />
           </div>
         ) : videos.length === 0 ? (
           <Empty

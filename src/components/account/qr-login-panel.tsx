@@ -84,7 +84,7 @@ export function QrLoginPanel({ accountType, onConfirmed }: QrLoginPanelProps) {
   }, [accountType, onConfirmed, session?.session_id, session?.status]);
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
       <Card
         styles={{
           body: {
@@ -144,7 +144,7 @@ export function QrLoginPanel({ accountType, onConfirmed }: QrLoginPanelProps) {
         </Checkbox>
       ) : null}
 
-      {error ? <Alert type="error" message={error} showIcon /> : null}
+      {error ? <Alert type="error" title={error} showIcon /> : null}
 
       <Button
         block

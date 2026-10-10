@@ -117,7 +117,7 @@ export function MessageStream({ items, executing, truncated, loading }: MessageS
               <Alert
                 key={item.key}
                 type={item.level === "error" ? "error" : item.level === "warning" ? "warning" : "info"}
-                message={item.message}
+                title={item.message}
                 showIcon
                 style={{ marginBottom: 12 }}
               />

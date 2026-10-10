@@ -639,7 +639,7 @@ export default function XhsDraftsPage() {
             ) : drafts.length === 0 ? (
               <Empty
                 image={<FileTextOutlined style={{ fontSize: 40, color: "#8f8f8f" }} />}
-                imageStyle={{ height: 56 }}
+                styles={{ image: { height: 56 } }}
                 description={
                   <div>
                     <Paragraph type="secondary">还没有可编辑草稿。</Paragraph>
@@ -925,7 +925,7 @@ export default function XhsDraftsPage() {
 
             <Divider style={{ margin: "12px 0" }} />
 
-            <Space direction="vertical" style={{ width: "100%" }} size={8}>
+            <Space orientation="vertical" style={{ width: "100%" }} size={8}>
               <Button onClick={handleGenerateTitles} loading={isPolishingTitles} block icon={<EditOutlined />}>润色标题</Button>
               <Button onClick={handleGenerateTags} loading={isPolishingTags} block icon={<TagsOutlined />}>润色标签</Button>
             </Space>
@@ -1033,7 +1033,7 @@ export default function XhsDraftsPage() {
                         />
                       ) : (
                         <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <Space direction="vertical" align="center"><PlayCircleOutlined style={{ fontSize: 32, color: "#386bff" }} /><Text style={{ fontSize: 12 }}>视频</Text></Space>
+                          <Space orientation="vertical" align="center"><PlayCircleOutlined style={{ fontSize: 32, color: "#386bff" }} /><Text style={{ fontSize: 12 }}>视频</Text></Space>
                         </div>
                       )}
                     </div>
@@ -1090,7 +1090,7 @@ export default function XhsDraftsPage() {
                       style={{ marginBottom: 12 }}
                       disabled={isOptimizing}
                     />
-                    <Space direction="vertical" style={{ width: "100%" }} size={8}>
+                    <Space orientation="vertical" style={{ width: "100%" }} size={8}>
                       <Button
                         block
                         type="primary"
@@ -1366,10 +1366,10 @@ export default function XhsDraftsPage() {
       />
 
       {error && (
-        <Alert type="error" message={error} showIcon closable onClose={() => setError(null)} />
+        <Alert type="error" title={error} showIcon closable onClose={() => setError(null)} />
       )}
       {message && (
-        <Alert type="success" message={message} showIcon closable onClose={() => setMessage(null)} />
+        <Alert type="success" title={message} showIcon closable onClose={() => setMessage(null)} />
       )}
 
       {activeMode === "rewrite" ? renderRewriteMode() : renderGenerateMode()}

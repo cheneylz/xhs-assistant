@@ -348,8 +348,8 @@ export default function XhsPublishPage() {
         }
       />
 
-      {error && <Alert type="error" message={error} showIcon closable onClose={() => setError(null)} />}
-      {message && <Alert type="success" message={message} showIcon closable onClose={() => setMessage(null)} />}
+      {error && <Alert type="error" title={error} showIcon closable onClose={() => setError(null)} />}
+      {message && <Alert type="success" title={message} showIcon closable onClose={() => setMessage(null)} />}
 
       {isLoading ? (
         <Card style={panelStyle} styles={{ body: cardBodyStyle }}>
@@ -362,7 +362,7 @@ export default function XhsPublishPage() {
         <Card style={panelStyle} styles={{ body: cardBodyStyle }}>
           <Empty
             image={<SendOutlined style={{ fontSize: 48, color: "#8f8f8f" }} />}
-            imageStyle={{ height: 64 }}
+            styles={{ image: { height: 64 } }}
             description={
               <div>
                 <Text strong style={{ fontSize: 16 }}>暂无发布任务</Text>
@@ -412,7 +412,7 @@ export default function XhsPublishPage() {
                     <List.Item.Meta
                       title={<Text ellipsis style={{ maxWidth: "100%", color: "#e8e8e8" }}>{job.title || "未命名"}</Text>}
                       description={
-                        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                        <Space orientation="vertical" size={4} style={{ width: "100%" }}>
                           <Space size={4} wrap>
                             {getStatusTag(job.status)}
                             <Tag>{job.publish_mode === "scheduled" ? "定时" : "即时"}</Tag>
@@ -635,8 +635,8 @@ export default function XhsPublishPage() {
       )}
 
       {/* D-01 智能排期推荐 */}
-      <Drawer title="智能排期推荐" open={showSchedules} onClose={() => setShowSchedules(false)} width={460}>
-        <Alert type="info" showIcon style={{ marginBottom: 12 }} message={scheduleReason || "基于账号历史发布时段互动高峰推荐，单账号每日不超过 3 条。"} />
+      <Drawer title="智能排期推荐" open={showSchedules} onClose={() => setShowSchedules(false)} size={460}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }} title={scheduleReason || "基于账号历史发布时段互动高峰推荐，单账号每日不超过 3 条。"} />
         <List
           dataSource={scheduleItems}
           locale={{ emptyText: "当前无可用推荐时段（可能已达库存缓冲上限）" }}

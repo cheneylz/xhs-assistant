@@ -48,10 +48,10 @@ export function AddAccountDrawer({ open, onClose, onBound }: AddAccountDrawerPro
         </div>
       }
       placement="right"
-      width={420}
+      size={420}
       open={open}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
       styles={{
         header: { background: "#ffffff", borderBottom: "1px solid #f0f0f0" },
         body: { background: "#ffffff", padding: 24 },

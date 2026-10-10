@@ -207,7 +207,7 @@ export default function XhsImageStudioPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           onClose={() => setError(null)}
@@ -217,7 +217,7 @@ export default function XhsImageStudioPage() {
       {message && (
         <Alert
           type="success"
-          message={message}
+          title={message}
           showIcon
           closable
           onClose={() => setMessage(null)}
@@ -483,7 +483,7 @@ export default function XhsImageStudioPage() {
               <>
                 {isLoading ? (
                   <div style={{ textAlign: "center", padding: 48 }}>
-                    <Spin tip="正在加载 AI 图片资产..." />
+                    <Spin description="正在加载 AI 图片资产..." />
                   </div>
                 ) : assets.length === 0 ? (
                   <Empty
@@ -668,7 +668,7 @@ export default function XhsImageStudioPage() {
         onCancel={() => setRefPickerOpen(false)}
         footer={null}
         width={640}
-        destroyOnClose
+        destroyOnHidden
       >
         <Tabs
           defaultActiveKey="user_images"

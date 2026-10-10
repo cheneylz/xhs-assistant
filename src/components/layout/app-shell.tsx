@@ -212,7 +212,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Layout style={{ marginLeft: siderWidth, transition: "margin-left 0.2s" }}>
         <Header style={{ padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "flex-end", borderBottom: "1px solid #f0f0f0", height: 48, lineHeight: "48px" }}>
           <Space size={12} align="center">
-            <Dropdown dropdownRender={() => notificationDropdownContent} trigger={["click"]} placement="bottomRight">
+            <Dropdown popupRender={() => notificationDropdownContent} trigger={["click"]} placement="bottomRight">
               <Badge count={unreadCount} size="small" offset={[-2, 2]}>
                 <Button type="text" icon={<BellOutlined style={{ fontSize: 16 }} />} style={{ display: "flex", alignItems: "center", justifyContent: "center" }} />
               </Badge>

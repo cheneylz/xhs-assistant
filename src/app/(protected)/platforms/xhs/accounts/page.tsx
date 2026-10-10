@@ -164,7 +164,7 @@ export default function XhsAccountsPage() {
         style={{ background: "#ffffff", borderColor: "#e8e8e8" }}
         styles={{ body: { padding: 24 } }}
       >
-        {error ? <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} /> : null}
+        {error ? <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} /> : null}
 
         {isLoading ? (
           <div style={{ textAlign: "center", padding: "48px 0" }}>
@@ -173,9 +173,9 @@ export default function XhsAccountsPage() {
         ) : accounts.length === 0 ? (
           <Empty
             image={<SafetyCertificateOutlined style={{ fontSize: 48, color: "#c8c8c8" }} />}
-            imageStyle={{ height: 64 }}
+            styles={{ image: { height: 64 } }}
             description={
-              <Space direction="vertical" size={4}>
+              <Space orientation="vertical" size={4}>
                 <Text strong style={{ color: "#3d3d3d" }}>
                   还没有绑定小红书账号
                 </Text>
@@ -245,7 +245,7 @@ export default function XhsAccountsPage() {
                           <Statistic
                             title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>类型</span>}
                             value="Creator"
-                            valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                            styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                           />
                         </Col>
                         {profileValue(account, "red_id") ? (
@@ -253,7 +253,7 @@ export default function XhsAccountsPage() {
                             <Statistic
                               title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>小红书号</span>}
                               value={profileValue(account, "red_id") as string}
-                              valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                              styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                             />
                           </Col>
                         ) : null}
@@ -264,28 +264,28 @@ export default function XhsAccountsPage() {
                           <Statistic
                             title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>类型</span>}
                             value="PC"
-                            valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                            styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                           />
                         </Col>
                         <Col span={6}>
                           <Statistic
                             title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>粉丝</span>}
                             value={profileValue(account, "followers") || "-"}
-                            valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                            styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                           />
                         </Col>
                         <Col span={6}>
                           <Statistic
                             title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>关注</span>}
                             value={profileValue(account, "following") || "-"}
-                            valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                            styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                           />
                         </Col>
                         <Col span={6}>
                           <Statistic
                             title={<span style={{ color: "#8f8f8f", fontSize: 12 }}>获赞</span>}
                             value={profileValue(account, "likes") || "-"}
-                            valueStyle={{ color: "#1a1a1a", fontSize: 14 }}
+                            styles={{ content: { color: "#1a1a1a", fontSize: 14 } }}
                           />
                         </Col>
                       </Row>

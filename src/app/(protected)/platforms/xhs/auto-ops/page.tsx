@@ -281,10 +281,10 @@ export default function AutoOpsPage() {
       />
 
       {error && (
-        <Alert type="error" message={error} showIcon closable onClose={() => setError(null)} />
+        <Alert type="error" title={error} showIcon closable onClose={() => setError(null)} />
       )}
       {message && (
-        <Alert type="success" message={message} showIcon closable onClose={() => setMessage(null)} />
+        <Alert type="success" title={message} showIcon closable onClose={() => setMessage(null)} />
       )}
 
       {/* Task List */}
@@ -299,7 +299,7 @@ export default function AutoOpsPage() {
         <Card style={panelStyle} styles={{ body: cardBodyStyle }}>
           <Empty
             image={<ThunderboltOutlined style={{ fontSize: 48, color: "#8f8f8f" }} />}
-            imageStyle={{ height: 64 }}
+            styles={{ image: { height: 64 } }}
             description={
               <div>
                 <Text strong style={{ fontSize: 16 }}>
@@ -348,13 +348,13 @@ export default function AutoOpsPage() {
                     <Statistic
                       title="已发布"
                       value={task.total_published}
-                      valueStyle={{ fontSize: 20, color: "#e8e8e8" }}
+                      styles={{ content: { fontSize: 20, color: "#e8e8e8" } }}
                     />
                   </Col>
                 </Row>
 
                 {/* Time info */}
-                <Space direction="vertical" size={2} style={{ width: "100%", marginBottom: 12 }}>
+                <Space orientation="vertical" size={2} style={{ width: "100%", marginBottom: 12 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     <ClockCircleOutlined style={{ marginRight: 4 }} />
                     上次运行：{formatShanghaiTime(task.last_run_at)}

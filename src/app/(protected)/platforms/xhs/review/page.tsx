@@ -441,7 +441,7 @@ export default function ReviewPage() {
         title={detail ? `审校报告 #${detail.id}` : "审校报告"}
         open={Boolean(detail)}
         onClose={() => setDetail(null)}
-        width={680}
+        size={680}
         extra={
           detail && detail.status !== "passed" && detail.gate_status !== "pending" ? (
             <Button type="primary" icon={<ThunderboltOutlined />} loading={isFixing} onClick={() => void handleAutoFix()}>
@@ -451,7 +451,7 @@ export default function ReviewPage() {
         }
       >
         {detail && (
-          <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
             <Descriptions size="small" column={3}>
               <Descriptions.Item label="审校状态">{statusTag(detail.status)}</Descriptions.Item>
               <Descriptions.Item label="三道门禁">{gateTag(detail.gate_status)}</Descriptions.Item>
@@ -467,7 +467,7 @@ export default function ReviewPage() {
 
             <Card size="small" title={`风险点（${detail.findings.length}）`}>
               {detail.findings.length === 0 ? (
-                <Alert type="success" showIcon message="未发现风险点" />
+                <Alert type="success" showIcon title="未发现风险点" />
               ) : (
                 <List
                   dataSource={detail.findings}
@@ -577,7 +577,7 @@ function RulesManagerModal(props: {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="内置默认规则（绝对化用语/功效宣称/敏感词/诱导行为/虚假数据）始终生效，此处可添加自定义规则，关键词用 | 分隔。"
+        title="内置默认规则（绝对化用语/功效宣称/敏感词/诱导行为/虚假数据）始终生效，此处可添加自定义规则，关键词用 | 分隔。"
       />
       <Form
         form={form}

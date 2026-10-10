@@ -302,7 +302,7 @@ export default function XhsBenchmarksPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           onClose={() => setError(null)}
@@ -312,7 +312,7 @@ export default function XhsBenchmarksPage() {
       {message && (
         <Alert
           type="success"
-          message={message}
+          title={message}
           showIcon
           closable
           onClose={() => setMessage(null)}
@@ -322,7 +322,7 @@ export default function XhsBenchmarksPage() {
 
       {isLoading ? (
         <div style={{ textAlign: "center", padding: 48 }}>
-          <Spin tip="正在加载竞品数据..." />
+          <Spin description="正在加载竞品数据..." />
         </div>
       ) : targets.length === 0 ? (
         <Card style={cardStyle}>

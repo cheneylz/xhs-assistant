@@ -243,7 +243,7 @@ export default function TaskCenterPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -252,7 +252,7 @@ export default function TaskCenterPage() {
       {message && (
         <Alert
           type="info"
-          message={message}
+          title={message}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -335,7 +335,7 @@ export default function TaskCenterPage() {
       <Card style={cardStyle}>
         {isLoading ? (
           <div style={{ textAlign: "center", padding: 48 }}>
-            <Spin tip="正在加载任务..." />
+            <Spin description="正在加载任务..." />
           </div>
         ) : tasks.length === 0 ? (
           <Empty

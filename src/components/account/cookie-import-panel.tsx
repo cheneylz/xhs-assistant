@@ -41,7 +41,7 @@ export function CookieImportPanel({ accountType, onImported }: CookieImportPanel
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
       <Form layout="vertical">
         <Form.Item label="Cookie 字符串">
           <Input.TextArea
@@ -63,7 +63,7 @@ export function CookieImportPanel({ accountType, onImported }: CookieImportPanel
         </Checkbox>
       ) : null}
 
-      {error ? <Alert type="error" message={error} showIcon /> : null}
+      {error ? <Alert type="error" title={error} showIcon /> : null}
 
       <Button
         type="primary"

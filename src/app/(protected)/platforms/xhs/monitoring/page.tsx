@@ -278,7 +278,7 @@ export default function XhsMonitoringPage() {
       {message && (
         <Alert
           type="info"
-          message={message}
+          title={message}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -287,7 +287,7 @@ export default function XhsMonitoringPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -296,7 +296,7 @@ export default function XhsMonitoringPage() {
 
       {isLoading ? (
         <div style={{ textAlign: "center", padding: 48 }}>
-          <Spin tip="正在加载监控目标..." />
+          <Spin description="正在加载监控目标..." />
         </div>
       ) : targets.length === 0 ? (
         <Card style={{ background: "#ffffff", borderColor: "#e8e8e8" }}>
@@ -339,21 +339,21 @@ export default function XhsMonitoringPage() {
                         title="匹配"
                         value={snapshotMetric(snapshotsByTarget[target.id], "matched_count")}
                         suffix="条"
-                        valueStyle={{ fontSize: 16 }}
+                        styles={{ content: { fontSize: 16 } }}
                       />
                     </Col>
                     <Col span={8}>
                       <Statistic
                         title="互动"
                         value={snapshotMetric(snapshotsByTarget[target.id], "total_engagement")}
-                        valueStyle={{ fontSize: 16 }}
+                        styles={{ content: { fontSize: 16 } }}
                       />
                     </Col>
                     <Col span={8}>
                       <Statistic
                         title="快照时间"
                         value={formatTime(snapshotsByTarget[target.id].created_at)}
-                        valueStyle={{ fontSize: 12 }}
+                        styles={{ content: { fontSize: 12 } }}
                       />
                     </Col>
                   </Row>

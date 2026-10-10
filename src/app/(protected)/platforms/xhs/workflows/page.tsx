@@ -205,7 +205,7 @@ export default function WorkflowsPage() {
       />
 
       <Spin spinning={isLoading}>
-        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Space orientation="vertical" size={16} style={{ width: "100%" }}>
           {/* 预置工作流 */}
           <Card
             title={
@@ -308,7 +308,7 @@ export default function WorkflowsPage() {
               type="info"
               showIcon
               style={{ marginBottom: 12 }}
-              message="技能采用标准 Agent SKILL 格式（name/description frontmatter + Markdown 指令正文），可人工新增、编辑、删除；预置技能由系统提供，自定义技能执行时以指令正文驱动 LLM。"
+              title="技能采用标准 Agent SKILL 格式（name/description frontmatter + Markdown 指令正文），可人工新增、编辑、删除；预置技能由系统提供，自定义技能执行时以指令正文驱动 LLM。"
             />
             <Table<SkillItem>
               rowKey="id"

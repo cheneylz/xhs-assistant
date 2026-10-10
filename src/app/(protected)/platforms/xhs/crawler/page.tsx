@@ -299,7 +299,7 @@ export default function XhsCrawlerPage() {
           </Space>
         </Form>
 
-        {error && <Alert message={error} type="error" showIcon style={{ marginTop: 16 }} />}
+        {error && <Alert title={error} type="error" showIcon style={{ marginTop: 16 }} />}
         {noPcAccount && (
           <Empty description="还没有可用的 PC 账号" style={{ marginTop: 24 }}>
             <Link href="/platforms/xhs/accounts"><Button type="primary" icon={<LinkOutlined />}>去绑定账号</Button></Link>

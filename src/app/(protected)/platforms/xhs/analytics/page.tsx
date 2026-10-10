@@ -285,7 +285,7 @@ export default function XhsAnalyticsPage() {
                     {metric.icon}
                   </span>
                 }
-                valueStyle={{ fontSize: 28, fontWeight: 600, color: "#e8e8e8" }}
+                styles={{ content: { fontSize: 28, fontWeight: 600, color: "#e8e8e8" } }}
               />
             </Card>
           </Col>
@@ -295,7 +295,7 @@ export default function XhsAnalyticsPage() {
       {error && (
         <Alert
           type="error"
-          message={error}
+          title={error}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -304,7 +304,7 @@ export default function XhsAnalyticsPage() {
       {reportMessage && (
         <Alert
           type="success"
-          message={reportMessage}
+          title={reportMessage}
           showIcon
           closable
           style={{ marginBottom: 16 }}
@@ -313,7 +313,7 @@ export default function XhsAnalyticsPage() {
 
       {isLoading ? (
         <div style={{ textAlign: "center", padding: 48 }}>
-          <Spin tip="正在加载数据洞察..." />
+          <Spin description="正在加载数据洞察..." />
         </div>
       ) : (
         <>
@@ -494,7 +494,7 @@ export default function XhsAnalyticsPage() {
         title="效果归因分析"
         open={aiDrawer === "attribution"}
         onClose={() => setAiDrawer(null)}
-        width={560}
+        size={560}
         extra={
           <Button
             type="primary"
@@ -548,7 +548,7 @@ export default function XhsAnalyticsPage() {
       </Drawer>
 
       {/* A-04 运营周报 */}
-      <Drawer title="运营周报" open={aiDrawer === "weekly"} onClose={() => setAiDrawer(null)} width={560}>
+      <Drawer title="运营周报" open={aiDrawer === "weekly"} onClose={() => setAiDrawer(null)} size={560}>
         <Paragraph style={{ whiteSpace: "pre-wrap" }}>{weeklyMarkdown || "暂无周报内容"}</Paragraph>
       </Drawer>
     </div>

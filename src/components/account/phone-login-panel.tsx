@@ -98,7 +98,7 @@ export function PhoneLoginPanel({ accountType, onConfirmed }: PhoneLoginPanelPro
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
       <Text type="secondary">{statusText}</Text>
 
       <Form layout="vertical">
@@ -142,7 +142,7 @@ export function PhoneLoginPanel({ accountType, onConfirmed }: PhoneLoginPanelPro
         </Form.Item>
       </Form>
 
-      {error ? <Alert type="error" message={error} showIcon /> : null}
+      {error ? <Alert type="error" title={error} showIcon /> : null}
 
       <Button
         type="primary"
