@@ -1698,7 +1698,7 @@ npx tsc --noEmit        # 期望无输出
 
 ```bash
 git add src/lib/agent/agent-state.ts src/lib/agent/agent-state.test.ts
-git commit -m "feat(agent-ui): SSE 缓冲解析 + reducer 包装 + 右栏工件刷新归并"
+git commit -m "feat(agent-ui): SSE 缓冲解析 + reducer 包装 + runStatus 校正（含 Task 2 审查跟进）"
 ```
 
 ---
