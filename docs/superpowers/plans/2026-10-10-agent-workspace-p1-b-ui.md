@@ -28,9 +28,10 @@ npx tsc --noEmit        # 期望无输出
 
 | 任务 | 状态 | 提交 |
 |---|---|---|
-| Task 1 契约类型 + 首屏快照归并 | ⬜ 未开始 | |
-| Task 2 SSE 增量归并（幂等） | ⬜ 未开始 | |
-| Task 3 SSE 缓冲解析 + reducer 包装 | ⬜ 未开始 | |
+| Task 1 契约类型 + 首屏快照归并 | ✅ 已验收 | `1a8b1fc`（跟进项并入后续提交） |
+| Task 2 SSE 增量归并（幂等） | ✅ 已验收 | `bc08ae1`（含 Task 1 审查跟进） |
+| Task 3 SSE 缓冲解析 + reducer 包装 | ✅ 已验收 | `3b34104`（含 Task 2 审查跟进） |
+| Task 3 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 4 API 封装（6 个函数） | ⬜ 未开始 | |
 | Task 5 use-agent-events（SSE + 重连） | ⬜ 未开始 | |
 | Task 6 conversation-list | ⬜ 未开始 | |
@@ -1703,6 +1704,126 @@ git commit -m "feat(agent-ui): SSE 缓冲解析 + reducer 包装 + runStatus 校
 
 ---
 
+### Task 3 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Modify: `src/lib/agent/agent-state.ts`
+- Modify: `src/lib/agent/agent-state.test.ts`
+
+**为什么独立提交**：Task 3 已提交（`3b34104`）后才出的质量审查结论（1 项 Important + 2 项 Minor），为可追溯性单独一笔。
+
+- [ ] **Step 1: 修复三处**
+
+**(1) 加强 `isAgentEventItem`**（Important：现在只判 `id`/`type`，缺 `payload` 的帧会通过守卫，然后在 `applyEventFrame` 里被解引用 → `TypeError` 让整个工作台白屏 —— 页面没有 error boundary）。把：
+
+```ts
+function isAgentEventItem(value: unknown): value is AgentEventItem {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as { id?: unknown; type?: unknown };
+  return typeof candidate.id === "number" && typeof candidate.type === "string";
+}
+```
+
+换成：
+
+```ts
+/**
+ * 帧守卫：id / type / payload 三样齐备才算帧。
+ * payload 必须是普通对象 —— applyEventFrame 会直接解引用 frame.payload.*，
+ * 而页面没有 error boundary：一帧缺载荷会让整个工作台白屏（而不是跳过这一帧）。
+ * 口径与 applyFirstScreen 侧用的 toRecord 一致（非 null、对象、非数组）。
+ */
+function isAgentEventItem(value: unknown): value is AgentEventItem {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as { id?: unknown; type?: unknown; payload?: unknown };
+  return (
+    typeof candidate.id === "number" &&
+    typeof candidate.type === "string" &&
+    candidate.payload !== null &&
+    typeof candidate.payload === "object" &&
+    !Array.isArray(candidate.payload)
+  );
+}
+```
+
+**(2) `runCreated` 改用统一推导**（Minor：action 带整个 `AgentRunItem` 却只读 `id` 并硬编码 `pendingRunIds`，签名与行为不符）。把 `agentReducer` 的 `runCreated` 分支里：
+
+```ts
+      return {
+        ...state,
+        conversation: action.conversation,
+        timeline,
+        runStatus: { executing: true, pendingRunIds: [action.run.id] },
+      };
+```
+
+换成：
+
+```ts
+      return {
+        ...state,
+        conversation: action.conversation,
+        timeline,
+        // 用统一推导而不是硬编码 pendingRunIds: [run.id] —— 服务端保证新 Run 是 pending，
+        // 但万一将来返回的是终态行，这里也不会把 UI 卡在错误的「执行中」
+        runStatus: runStatusFromRuns([action.run]),
+      };
+```
+
+**(3) 补三条用例**（Minor：把常态路径与边界钉死）：
+
+在 `parseSseBuffer` 的 describe 里追加：
+
+```ts
+  it("缺 payload / payload 为 null 的帧被跳过（不会在 reducer 里解引用崩掉整页）", () => {
+    const buffer =
+      'data: {"id":1,"run_id":1,"type":"status","created_at":"t"}\n\ndata: {"id":2,"run_id":1,"type":"status","payload":null,"created_at":"t"}\n\n';
+    expect(parseSseBuffer(buffer).frames).toEqual([]);
+  });
+
+  it("一次读入多帧：全部按序返回且 rest 为空（重连后单块最多 200 帧，这是常态路径）", () => {
+    const frame = (id: number) =>
+      `data: {"id":${id},"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\n`;
+    const { frames, rest } = parseSseBuffer(`${frame(1)}${frame(2)}${frame(3)}`);
+    expect(frames.map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(rest).toBe("");
+  });
+```
+
+在 `applyArtifacts / agentReducer` 的 describe 里追加：
+
+```ts
+  it("runStatus 传空 runs：回到空闲（服务端一条 Run 都没有的边界）", () => {
+    const executing = agentReducer(createInitialState(), {
+      type: "runCreated",
+      conversation: buildDetail().conversation,
+      message: buildUserMessage(),
+      run: buildRun({ id: 9, status: "pending" }),
+    });
+    expect(agentReducer(executing, { type: "runStatus", runs: [] }).runStatus).toEqual({
+      executing: false,
+      pendingRunIds: [],
+    });
+  });
+```
+
+- [ ] **Step 2: 跑测试 + 全量 + 类型检查**
+
+```bash
+npx vitest run src/lib/agent/agent-state.test.ts   # 期望 42 passed
+npx vitest run                                      # 期望 25 文件全绿
+npx tsc --noEmit                                    # 期望无输出
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add src/lib/agent/agent-state.ts src/lib/agent/agent-state.test.ts
+git commit -m "fix(agent-ui): 帧守卫补 payload 校验并补测（Task 3 质量审查修复）"
+```
+
+---
+
 ### Task 4: API 封装（`src/lib/api.ts` 追加）
 
 **Files:**
@@ -2739,6 +2860,10 @@ export default function AgentWorkspacePage() {
    * （输入框禁用、也没有取消按钮）。定时读一次服务端 runs 把状态收敛。
    * 只发 runStatus 动作（不动时间线 / 水位 / 工件），因此不需要重连 SSE。
    * 执行中每 5s 一个轻量 GET，空闲即停（与设计稿「空闲降速」的取向一致）。
+   *
+   * 已知无害竞态（登记在交接文档，不做机制兜底）：一次在途的请求若在新一轮
+   * 「发送 → runCreated」之后才落地，会把 executing 短暂抹回 false（新 Run 不在
+   * 那份过期响应里）—— 用户若立刻再发会吃到 409，拦截器提示并自动重同步，自愈。
    */
   const settleRunStatus = useCallback(async () => {
     const id = selectionRef.current;
@@ -3182,6 +3307,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 不显示 `step_count` / token 进度与 `task_id` 深链（实时不可得，留 P2）
    - 「被阻断」靠夹具验收（Task 11）
    - 快照与 `agent_end` 的毫秒级竞态窗口：已由 Task 10 的 `settleRunStatus` 收敛（执行中每 5s 校正一次执行状态）；把成因与窗口登记在这里备查
+   - `settleRunStatus` 的过期响应竞态（新旧响应乱序 → executing 短暂抹回 false）：无害且自愈（再发会 409 → 自动重同步），登记备查
    - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
    - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
