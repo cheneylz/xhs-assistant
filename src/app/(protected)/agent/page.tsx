@@ -227,6 +227,8 @@ export default function AgentWorkspacePage() {
    * 把工作台清回空态（syncedId=null 会随 effect 依赖断开 SSE）。
    * 失败（409 执行中 / 404 已被删）由拦截器 toast —— 之后 refreshList 对齐
    * 「执行中」标记与行集合（左栏标记来自列表接口快照，可能滞后）。
+   * 【契约】不要把 onDelete 改成 void、也不要去掉这里的 try/catch ——
+   * 前者会让 Popconfirm 的确认按钮失去 loading（antd 靠 thenable 自动接管），后者会造成 unhandled rejection。
    */
   const handleDelete = useCallback(
     async (id: number) => {

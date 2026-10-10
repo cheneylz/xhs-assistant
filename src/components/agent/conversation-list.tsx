@@ -102,7 +102,11 @@ export function ConversationList(props: ConversationListProps) {
                   {item.title}
                 </Text>
                 {/* 点击删除图标不能连带选中会话 —— 包裹层 stopPropagation */}
-                <span className="agent-conv-delete" onClick={(event) => event.stopPropagation()}>
+                <span
+                  className="agent-conv-delete"
+                  style={{ flexShrink: 0, display: "inline-flex" }}
+                  onClick={(event) => event.stopPropagation()}
+                >
                   <Popconfirm
                     title={`确定删除会话「${item.title}」？`}
                     description="消息与工件会一并清除，不可恢复"
