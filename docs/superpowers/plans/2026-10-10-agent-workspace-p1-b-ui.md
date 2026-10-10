@@ -38,8 +38,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 6 conversation-list | ✅ 已验收 | `ea5df90`（跟进项并入 Task 7） |
 | Task 7 message-stream + message-bubble | ✅ 已验收 | `6b33cfb`（含 Task 6 审查跟进） |
 | Task 7 补丁（质量审查修复） | ✅ 已验收 | `9faaf01` |
-| Task 8 tool-call-card + thinking-indicator | 🔶 实现完成，待补丁复审 | `f702b4b` |
-| Task 8 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 8 tool-call-card + thinking-indicator | ✅ 已验收 | `f702b4b` |
+| Task 8 补丁（质量审查修复） | ✅ 已验收 | `fe6e425` |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
 | Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
@@ -3172,7 +3172,7 @@ const preStyle: CSSProperties = {
 - [ ] **Step 4: 验证 + 提交**
 
 ```bash
-npx vitest run src/lib/agent/tool-card-view.test.ts   # 期望全绿（新增 6 个用例）
+npx vitest run src/lib/agent/tool-card-view.test.ts   # 期望全绿（新增 9 个用例）
 npx vitest run                                        # 期望 26 文件全绿
 npx tsc --noEmit                                      # 期望无输出
 
@@ -3984,6 +3984,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）；在工具卡展开的 `<pre>` 里滚轮上滚也会冒泡到容器、关闭跟随（语义可辩护，属已知行为）
    - 展开最后一张工具卡不会自动把它滚入视野（下一个内容帧才会跟随滚到底）—— Task 12 浏览器观察项
    - 两个 4000 的口径不同：服务端 `shared.ts` 按**紧凑 JSON** 截断、前端 `DETAIL_TEXT_LIMIT` 按**pretty-print 后**字符数（后者是前者的兜底，不要「顺手统一」）；服务端那处 `slice` 同样有把代理对切半的风险（本次只修了前端，登记备查）
+   - 工具卡的截断文案有一处纳秒级竞态（Task 8 复审观察）：首屏快照恰落在「审计行已提交、事件行未落库」的缝隙且结果超 4000 时，卡片会出现「服务端已截断」文案配新到的完整结果（`upsertToolCard` 应用帧结果时不清 `resultTruncated`）。窗口极窄、影响仅是文案观感；若要收，最小改法是 merge 应用 `patch.result` 时把 `resultTruncated` 置 false（属 reducer 边界，未修）
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
