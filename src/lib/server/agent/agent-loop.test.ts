@@ -15,6 +15,7 @@ import {
   type RunAgentLoopOptions,
   type StoredMessage,
 } from "./agent-loop.mts";
+import { SKILL_CATALOG } from "./skill-catalog";
 
 /** 空 usage，只为满足 AssistantMessage 形状 */
 const EMPTY_USAGE = {
@@ -198,11 +199,13 @@ function baseOptions(overrides: Partial<RunAgentLoopOptions> = {}) {
 }
 
 describe("buildToolCatalogText（工具目录文本）", () => {
-  it("列出全部 6 个技能的 skillKey 与描述", () => {
+  it("列出全部 13 个技能的 skillKey 与描述", () => {
     const text = buildToolCatalogText();
-    expect(text).toContain("topic_generate");
-    expect(text).toContain("content_note_pack");
-    expect(text).toContain("选题生成");
+    expect(SKILL_CATALOG).toHaveLength(13);
+    for (const definition of SKILL_CATALOG) {
+      expect(text, `目录文本缺少 ${definition.skillKey}`).toContain(definition.skillKey);
+      expect(text, `目录文本缺少 ${definition.name}`).toContain(definition.name);
+    }
   });
 });
 

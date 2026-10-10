@@ -245,6 +245,274 @@ description: 基于历史发布数据与平台活跃规律，推荐未来 3 天�
     riskLevel: "read",
     summarize: (details) => `推荐 ${summarizeCount(details.slots)} 个发布时段`,
   },
+  {
+    skillKey: "content_rewrite",
+    name: "去 AI 味改写",
+    description: "改写指定草稿的正文，降低 AI 腔、增强小红书语感（直接覆盖原文，无撤销）",
+    paramsSchema: {
+      type: "object",
+      properties: {
+        draft_id: { type: "number" },
+        instruction: { type: "string" },
+        intensity: { type: "string", enum: ["light", "medium", "deep"] },
+      },
+      required: ["draft_id"],
+    },
+    instructions: `---
+name: 去 AI 味改写
+description: 对指定草稿正文做去 AI 味改写并直接覆盖原文
+---
+
+# 去 AI 味改写
+
+调用文本模型对草稿正文做去 AI 味改写（降低书面腔、模板感与空洞排比），**结果直接覆盖草稿原文，没有撤销**。调用前必须先说明将要修改哪篇草稿。
+
+## 参数
+
+- draft_id：草稿 ID（必填）
+- instruction：额外改写要求（可选）
+- intensity：改写强度 light / medium / deep（可选，默认 medium）
+
+## 输出
+
+返回草稿 ID（draft_id）、标题（title）与改写后字数（length）。`,
+    // 实证：api/ai/rewrite-note/route.ts:44 执行 aiDraft.update({ body: rewrittenBody }) —— 真的改用户草稿
+    riskLevel: "write",
+    artifact: {
+      kind: "draft",
+      idField: "draft_id",
+      // 字符串 titleField：单产出取该字段本身（extractArtifacts 已支持，见 persist.ts）
+      titleField: "title",
+      hrefPrefix: "/platforms/xhs/drafts?id=",
+    },
+    summarize: (details) => {
+      const draftId = summarizeCount(details.draft_id);
+      const title = typeof details.title === "string" && details.title ? `：《${details.title}》` : "";
+      return `已改写草稿 #${draftId}${title}（${summarizeCount(details.length)} 字）`;
+    },
+  },
+  {
+    skillKey: "content_titles",
+    name: "标题生成",
+    description: "为给定文案生成多个小红书标题备选（只返回数组，不落库）",
+    paramsSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        body: { type: "string" },
+        count: { type: "number", default: 5 },
+      },
+      required: ["title"],
+    },
+    instructions: `---
+name: 标题生成
+description: 为给定文案生成多个小红书风格标题备选
+---
+
+# 标题生成
+
+为给定标题与正文生成多个备选标题（口语化、有钩子）。**只返回数组，不落库** —— 结果可直接作为参数喂给 content_note_pack 等下游工具。
+
+## 参数
+
+- title：原标题（必填）
+- body：正文内容（可选，越完整生成的标题越贴合）
+- count：标题数量（可选，默认 5，最多 10）
+
+## 输出
+
+返回标题数组（titles）与数量（count）。`,
+    // 实证：generateTitles 纯返回 string[]，无任何 prisma 产品数据写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const count = summarizeCount(details.titles);
+      if (count > 0) {
+        const first = String((details.titles as unknown[])[0] ?? "");
+        return `生成 ${count} 个标题${first ? `：《${first}》` : ""}`;
+      }
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `生成 0 个标题${reason}`;
+    },
+  },
+  {
+    skillKey: "content_tags",
+    name: "标签生成",
+    description: "为给定文案生成话题标签（只返回数组，不落库）",
+    paramsSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        body: { type: "string" },
+        count: { type: "number", default: 8 },
+      },
+      required: ["title"],
+    },
+    instructions: `---
+name: 标签生成
+description: 为给定文案生成小红书话题标签
+---
+
+# 标签生成
+
+为给定标题与正文生成话题标签。**只返回数组，不落库**。
+
+## 参数
+
+- title：标题（必填）
+- body：正文内容（可选）
+- count：标签数量（可选，默认 8，最多 20）
+
+## 输出
+
+返回标签数组（tags，不含 # 前缀）与数量（count）。`,
+    // 实证：generateTags 纯返回 string[]，无任何 prisma 产品数据写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const count = summarizeCount(details.tags);
+      if (count > 0) {
+        const preview = (details.tags as unknown[]).slice(0, 3).map((tag) => `#${String(tag)}`).join(" ");
+        return `生成 ${count} 个标签：${preview}`;
+      }
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `生成 0 个标签${reason}`;
+    },
+  },
+  {
+    skillKey: "analytics_reports",
+    name: "分析报告读取",
+    description: "读取最近的爆款拆解报告（结构规律与样本笔记）",
+    paramsSchema: { type: "object", properties: { limit: { type: "number", default: 5 } } },
+    instructions: `---
+name: 分析报告读取
+description: 读取最近的爆款拆解报告，了解同赛道已验证的内容结构
+---
+
+# 分析报告读取
+
+读取最近的爆款拆解报告（标题/封面/正文/互动结构规律 + 样本笔记），作为生成内容的参考。
+
+## 参数
+
+- limit：读取最近几份（可选，默认 5，最多 20）
+
+## 输出
+
+返回报告数组（reports，含结构规律与样本）与数量（count）。`,
+    // 实证：listExplosionReports 仅 findMany，无写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const count = summarizeCount(details.reports);
+      if (count > 0) return `读取 ${count} 份爆款拆解报告`;
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `读取 0 份爆款拆解报告${reason}`;
+    },
+  },
+  {
+    skillKey: "kb_get",
+    name: "知识库读取",
+    description: "读取账号知识库上下文（定位/口吻/可信主张/内容边界/经验）",
+    paramsSchema: { type: "object", properties: {} },
+    instructions: `---
+name: 知识库读取
+description: 读取账号知识库（定位、口吻风格、可信主张、内容边界、经验与风格样本）
+---
+
+# 知识库读取
+
+读取账号知识库上下文，了解账号定位、口吻风格、可信主张、内容边界与已验证经验。
+
+## 参数
+
+无参数。
+
+## 输出
+
+返回知识库上下文本（context）与字数（length）。`,
+    // 实证：buildKbContext 只读知识库与样本，无写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const length = summarizeCount(details.length);
+      const reason = typeof details.reason === "string" && details.reason ? `，${details.reason}` : "";
+      return `读取知识库上下文（${length} 字${reason}）`;
+    },
+  },
+  {
+    skillKey: "library_search_notes",
+    name: "内容库检索",
+    description: "按关键词/标签检索内容库里的笔记（标题、作者、时间与正文摘要）",
+    paramsSchema: {
+      type: "object",
+      properties: {
+        keyword: { type: "string" },
+        tag_id: { type: "number" },
+        limit: { type: "number", default: 10 },
+      },
+    },
+    instructions: `---
+name: 内容库检索
+description: 按关键词或标签检索内容库里的笔记
+---
+
+# 内容库检索
+
+按关键词（匹配标题/正文/作者/笔记 ID）或标签检索内容库，返回命中的笔记摘要。
+
+## 参数
+
+- keyword：关键词（可选；不传则取最近的笔记）
+- tag_id：按标签 ID 过滤（可选）
+- limit：返回条数（可选，默认 10，最多 20）
+
+## 输出
+
+返回命中总数（total）、返回条数（count）与笔记摘要数组（items：id/title/author_name/platform/created_at/content_excerpt）。`,
+    // 实证：note-service 的 searchNotes 只 findMany，无写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const total = summarizeCount(details.total);
+      if (total > 0) return `检索到 ${total} 篇笔记`;
+      const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+      return `检索到 0 篇笔记${reason}`;
+    },
+  },
+  {
+    skillKey: "library_note_detail",
+    name: "笔记详情+评论",
+    description: "读取一篇笔记的完整正文/标签与评论列表",
+    paramsSchema: {
+      type: "object",
+      properties: {
+        note_id: { type: "number" },
+        comment_limit: { type: "number", default: 20 },
+      },
+      required: ["note_id"],
+    },
+    instructions: `---
+name: 笔记详情+评论
+description: 读取一篇内容库笔记的完整正文、标签与评论
+---
+
+# 笔记详情+评论
+
+读取指定笔记的完整正文（超长截断到 2000 字）、标签与评论列表（超长单条截断到 200 字）。
+
+## 参数
+
+- note_id：笔记 ID（必填，内容库主键，不是小红书 note_id）
+- comment_limit：最多返回多少条评论（可选，默认 20，最多 200）
+
+## 输出
+
+返回笔记信息（note_id/note_title/author_name/platform/created_at/tags/content/content_truncated）、评论总数（comment_total）与评论数组（comments：user_name/content/like_count）。`,
+    // 实证：note-service 的 getNoteDetail / listNoteComments 只读，无写入
+    riskLevel: "read",
+    summarize: (details) => {
+      const noteId = summarizeCount(details.note_id);
+      const title = typeof details.note_title === "string" && details.note_title ? `《${details.note_title}》` : "";
+      const total = summarizeCount(details.comment_total);
+      return total > 0 ? `笔记 #${noteId}${title}，评论 ${total} 条` : `笔记 #${noteId}${title}，暂无评论`;
+    },
+  },
 ];
 
 /** 按 skillKey 查找技能定义 */

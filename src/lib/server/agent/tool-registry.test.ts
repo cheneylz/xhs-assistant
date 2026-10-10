@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("buildAgentTools（技能 → AgentTool）", () => {
   it("为 SKILL_CATALOG 每个技能生成一个工具", () => {
     const tools = buildAgentTools(context);
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(13);
   });
 
   it("工具的 name 等于 skillKey，label 等于技能名", () => {
@@ -57,7 +57,9 @@ describe("buildAgentTools（技能 → AgentTool）", () => {
     expect(tools.find((tool) => tool.name === "schedule_recommend")?.replay).toBe("safe");
     expect(tools.find((tool) => tool.name === "hot_refresh")?.replay).toBe("never");
     expect(tools.find((tool) => tool.name === "content_note_pack")?.replay).toBe("never");
-    expect(tools.filter((tool) => tool.replay === "safe")).toHaveLength(2);
+    // read 级 8 个：script_generate / schedule_recommend / content_titles / content_tags /
+    // analytics_reports / kb_get / library_search_notes / library_note_detail
+    expect(tools.filter((tool) => tool.replay === "safe")).toHaveLength(8);
   });
 
   it("execute 返回结构化结果，content 为可读文本", async () => {

@@ -110,7 +110,7 @@ export function pruneByCharBudget<T>(messages: T[], charBudget: number): T[] {
  *
  * 注意：本函数的返回值只用于模型可见的 content，**不要**用它替换 details ——
  * persist.ts 的 extractArtifacts 依赖完整的 details。
- * 另：`totals`/`truncated` 两个键与工具自身产出同名时会被覆盖（当前 6 个技能无此字段）。
+ * 另：`totals`/`truncated` 两个键与工具自身产出同名时会被覆盖（当前 13 个技能无此字段）。
  */
 export function summarizeToolResult(
   result: Record<string, unknown>,

@@ -54,6 +54,37 @@ describe("TOOL_SCHEMAS（工具入参 schema）", () => {
   it("getToolSchema 对未知 skillKey 抛错", () => {
     expect(() => getToolSchema("not_exist")).toThrow();
   });
+
+  it("content_rewrite 的 intensity 只接受三个枚举值，draft_id 必填", () => {
+    const schema = getToolSchema("content_rewrite");
+    expect(Value.Check(schema, { draft_id: 12 })).toBe(true);
+    expect(Value.Check(schema, { draft_id: 12, intensity: "deep" })).toBe(true);
+    expect(Value.Check(schema, { draft_id: 12, intensity: "extreme" })).toBe(false);
+    expect(Value.Check(schema, {})).toBe(false);
+    expect(Value.Check(schema, { draft_id: 0 })).toBe(false);
+  });
+
+  it("content_titles / content_tags 的 count 有上下限（与路由侧默认值一致）", () => {
+    expect(Value.Check(getToolSchema("content_titles"), { title: "T", count: 10 })).toBe(true);
+    expect(Value.Check(getToolSchema("content_titles"), { title: "T", count: 11 })).toBe(false);
+    expect(Value.Check(getToolSchema("content_titles"), { count: 5 })).toBe(false); // title 必填
+    expect(Value.Check(getToolSchema("content_tags"), { title: "T", count: 20 })).toBe(true);
+    expect(Value.Check(getToolSchema("content_tags"), { title: "T", count: 21 })).toBe(false);
+  });
+
+  it("kb_get 接受空对象，library_note_detail 的 note_id 必填", () => {
+    expect(Value.Check(getToolSchema("kb_get"), {})).toBe(true);
+    expect(Value.Check(getToolSchema("library_note_detail"), {})).toBe(false);
+    expect(Value.Check(getToolSchema("library_note_detail"), { note_id: 3 })).toBe(true);
+  });
+
+  it("library_search_notes 全部参数可选（无参检索 = 取最近笔记）", () => {
+    const schema = getToolSchema("library_search_notes");
+    expect(Value.Check(schema, {})).toBe(true);
+    expect(Value.Check(schema, { keyword: "露营", limit: 20 })).toBe(true);
+    expect(Value.Check(schema, { limit: 21 })).toBe(false);
+    expect(Value.Check(schema, { limit: 0 })).toBe(false);
+  });
 });
 
 describe("assertToolNamesProviderSafe（工具名合法性）", () => {

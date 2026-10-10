@@ -6,11 +6,18 @@ import { describe, expect, it } from "vitest";
 import { SKILL_CATALOG, SKILL_RISK_LEVELS, findSkillDefinition, summarizeCount } from "./skill-catalog";
 
 describe("SKILL_CATALOG（技能目录）", () => {
-  it("包含全部 6 个预置技能", () => {
+  it("包含全部 13 个预置技能", () => {
     const keys = SKILL_CATALOG.map((item) => item.skillKey).sort();
     expect(keys).toEqual([
+      "analytics_reports",
       "content_note_pack",
+      "content_rewrite",
+      "content_tags",
+      "content_titles",
       "hot_refresh",
+      "kb_get",
+      "library_note_detail",
+      "library_search_notes",
       "review_submit",
       "schedule_recommend",
       "script_generate",
@@ -43,7 +50,7 @@ describe("SKILL_CATALOG（技能目录）", () => {
     expect(findSkillDefinition("not_exist")).toBeUndefined();
   });
 
-  it("6 个技能全部为 read 或 write，不含 publish（首期不开放发布）", () => {
+  it("13 个技能全部为 read 或 write，不含 publish（首期不开放发布）", () => {
     for (const item of SKILL_CATALOG) {
       expect(item.riskLevel, `技能 ${item.skillKey} 不应为 publish`).not.toBe("publish");
     }
@@ -57,6 +64,14 @@ describe("SKILL_CATALOG（技能目录）", () => {
     expect(byKey.get("review_submit")?.riskLevel).toBe("write");
     expect(byKey.get("script_generate")?.riskLevel).toBe("read");
     expect(byKey.get("schedule_recommend")?.riskLevel).toBe("read");
+    // C 块 7 个新工具（risk 读函数体核过，不凭名字推断）
+    expect(byKey.get("content_rewrite")?.riskLevel).toBe("write"); // aiDraft.update({ body }) 真的改草稿
+    expect(byKey.get("content_titles")?.riskLevel).toBe("read"); // generateTitles 纯返回 string[]
+    expect(byKey.get("content_tags")?.riskLevel).toBe("read"); // generateTags 纯返回 string[]
+    expect(byKey.get("analytics_reports")?.riskLevel).toBe("read"); // listExplosionReports 只 findMany
+    expect(byKey.get("kb_get")?.riskLevel).toBe("read"); // buildKbContext 只读知识库
+    expect(byKey.get("library_search_notes")?.riskLevel).toBe("read"); // note-service 只 findMany
+    expect(byKey.get("library_note_detail")?.riskLevel).toBe("read"); // 同上
   });
 
   it("声明 artifact 的技能，其 idField 必须真能在产出里找到（防字段名写错）", () => {
@@ -65,6 +80,7 @@ describe("SKILL_CATALOG（技能目录）", () => {
       "topic_generate": "suggestion_ids",
       "content_note_pack": "draft_id",
       "review_submit": "review_id",
+      "content_rewrite": "draft_id",
     };
     for (const [skillKey, idField] of Object.entries(expectedIdFields)) {
       const spec = findSkillDefinition(skillKey)?.artifact;
@@ -79,6 +95,19 @@ describe("SKILL_CATALOG（技能目录）", () => {
     expect(findSkillDefinition("script_generate")?.artifact).toBeUndefined();
   });
 
+  it("C 块 6 个只读工具不声明 artifact（产出只在对话里，不落库、不跳转）", () => {
+    for (const skillKey of [
+      "content_titles",
+      "content_tags",
+      "analytics_reports",
+      "kb_get",
+      "library_search_notes",
+      "library_note_detail",
+    ]) {
+      expect(findSkillDefinition(skillKey)?.artifact, `${skillKey} 不应声明 artifact`).toBeUndefined();
+    }
+  });
+
   it("每个技能都有 summarize，且对正常产出返回非空摘要", () => {
     for (const item of SKILL_CATALOG) {
       expect(typeof item.summarize, `${item.skillKey}.summarize`).toBe("function");
@@ -90,6 +119,13 @@ describe("SKILL_CATALOG（技能目录）", () => {
       review_submit: { review_id: 1, gate_status: "passed" },
       script_generate: { script: "脚本" },
       schedule_recommend: { slots: [{}] },
+      content_rewrite: { draft_id: 12, title: "露营装备清单", length: 356 },
+      content_titles: { titles: ["标题A"] },
+      content_tags: { tags: ["露营"] },
+      analytics_reports: { reports: [{}] },
+      kb_get: { context: "账号定位", length: 4 },
+      library_search_notes: { total: 2, items: [] },
+      library_note_detail: { note_id: 5, note_title: "露营装备清单", comment_total: 3 },
     };
     for (const item of SKILL_CATALOG) {
       const summary = item.summarize(samples[item.skillKey] ?? {});
@@ -120,5 +156,57 @@ describe("SKILL_CATALOG（技能目录）", () => {
     );
     // 契约：reason 解释「为什么是 0」，有产出时不带出来
     expect(hotRefresh.summarize({ collected: 5, reason: "无种子关键词" })).toBe("收录 5 条热点");
+  });
+
+  it("content_rewrite 的摘要：草稿 ID + 标题 + 改写后字数", () => {
+    const tool = findSkillDefinition("content_rewrite");
+    if (!tool) throw new Error("content_rewrite 不在目录里");
+    expect(tool.summarize({ draft_id: 12, title: "露营装备清单", length: 356 })).toBe(
+      "已改写草稿 #12：《露营装备清单》（356 字）",
+    );
+    // 标题缺失时退化为「#id（字数）」，不能让摘要出现空括号
+    expect(tool.summarize({ draft_id: 12, length: 356 })).toBe("已改写草稿 #12（356 字）");
+  });
+
+  it("content_titles / content_tags 的摘要：正常给条数与首项，空结果带出原因", () => {
+    const titles = findSkillDefinition("content_titles");
+    const tags = findSkillDefinition("content_tags");
+    if (!titles || !tags) throw new Error("content_titles / content_tags 不在目录里");
+    expect(titles.summarize({ titles: ["露营装备清单", "标题B"] })).toBe("生成 2 个标题：《露营装备清单》");
+    expect(titles.summarize({ titles: [], reason: "模型未返回可用标题" })).toBe("生成 0 个标题（模型未返回可用标题）");
+    // 标签预览最多 3 个，用空格分隔
+    expect(tags.summarize({ tags: ["露营", "户外", "装备", "第四个"] })).toBe("生成 4 个标签：#露营 #户外 #装备");
+    expect(tags.summarize({ tags: [], reason: "模型未返回可用标签" })).toBe("生成 0 个标签（模型未返回可用标签）");
+  });
+
+  it("analytics_reports / kb_get 的摘要：空结果带出原因（可诊断性要求）", () => {
+    const reports = findSkillDefinition("analytics_reports");
+    const kb = findSkillDefinition("kb_get");
+    if (!reports || !kb) throw new Error("analytics_reports / kb_get 不在目录里");
+    expect(reports.summarize({ count: 3, reports: [{}, {}, {}] })).toBe("读取 3 份爆款拆解报告");
+    // 契约：reason 解释「为什么是 0」，有产出时不带出来
+    expect(reports.summarize({ count: 0, reports: [], reason: "还没有爆款拆解报告，可先在「爆款拆解」页生成" })).toBe(
+      "读取 0 份爆款拆解报告（还没有爆款拆解报告，可先在「爆款拆解」页生成）",
+    );
+    expect(kb.summarize({ context: "x".repeat(100), length: 100 })).toBe("读取知识库上下文（100 字）");
+    expect(kb.summarize({ context: "", length: 0, reason: "知识库尚未配置，可先在「知识库」页填写账号定位与口吻" })).toBe(
+      "读取知识库上下文（0 字，知识库尚未配置，可先在「知识库」页填写账号定位与口吻）",
+    );
+  });
+
+  it("library_search_notes / library_note_detail 的摘要：带原因与评论数", () => {
+    const search = findSkillDefinition("library_search_notes");
+    const detail = findSkillDefinition("library_note_detail");
+    if (!search || !detail) throw new Error("library_* 不在目录里");
+    expect(search.summarize({ total: 3, count: 3, items: [] })).toBe("检索到 3 篇笔记");
+    expect(search.summarize({ total: 0, count: 0, items: [], reason: "没有匹配「露营」的笔记" })).toBe(
+      "检索到 0 篇笔记（没有匹配「露营」的笔记）",
+    );
+    expect(detail.summarize({ note_id: 5, note_title: "露营装备清单", comment_total: 8 })).toBe(
+      "笔记 #5《露营装备清单》，评论 8 条",
+    );
+    expect(detail.summarize({ note_id: 5, note_title: "露营装备清单", comment_total: 0 })).toBe(
+      "笔记 #5《露营装备清单》，暂无评论",
+    );
   });
 });

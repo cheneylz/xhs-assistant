@@ -123,4 +123,20 @@ describe("extractArtifacts（工件抽取）", () => {
   it("未知工具返回空数组", () => {
     expect(extractArtifacts("not_exist", {})).toEqual([]);
   });
+
+  it("content_rewrite 的字符串 titleField 被用作工件标题（D-C2：单产出也能带标题）", () => {
+    const artifacts = extractArtifacts("content_rewrite", { draft_id: 12, title: "露营装备清单", length: 356 });
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      kind: "draft",
+      id: 12,
+      title: "露营装备清单",
+      href: "/platforms/xhs/drafts?id=12",
+    });
+  });
+
+  it("字符串 titleField 为空串时回退「技能名 #id」（不产出空标题）", () => {
+    const artifacts = extractArtifacts("content_rewrite", { draft_id: 12, title: "", length: 10 });
+    expect(artifacts[0]?.title).toBe("去 AI 味改写 #12");
+  });
 });

@@ -41,6 +41,55 @@ export const TOOL_SCHEMAS: Record<string, TSchema> = {
   "schedule_recommend": Type.Object({
     platform_account_id: Type.Integer({ minimum: 1, description: "发布账号 ID，必填" }),
   }),
+
+  "content_rewrite": Type.Object({
+    draft_id: Type.Integer({ minimum: 1, description: "待改写的草稿 ID，必填" }),
+    instruction: Type.Optional(Type.String({ description: "额外改写要求，如「更口语化、加 emoji」" })),
+    intensity: Type.Optional(
+      Type.Union([Type.Literal("light"), Type.Literal("medium"), Type.Literal("deep")], {
+        description: "改写强度，默认 medium",
+      }),
+    ),
+  }),
+
+  "content_titles": Type.Object({
+    title: Type.String({ minLength: 1, description: "原标题，必填" }),
+    body: Type.Optional(Type.String({ description: "正文内容，越完整生成的标题越贴合" })),
+    count: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: 10, default: 5, description: "标题数量，默认 5，最多 10" }),
+    ),
+  }),
+
+  "content_tags": Type.Object({
+    title: Type.String({ minLength: 1, description: "标题，必填" }),
+    body: Type.Optional(Type.String({ description: "正文内容" })),
+    count: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: 20, default: 8, description: "标签数量，默认 8，最多 20" }),
+    ),
+  }),
+
+  "analytics_reports": Type.Object({
+    limit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: 20, default: 5, description: "读取最近几份拆解报告，默认 5，最多 20" }),
+    ),
+  }),
+
+  "kb_get": Type.Object({}, { description: "知识库读取无需参数" }),
+
+  "library_search_notes": Type.Object({
+    keyword: Type.Optional(Type.String({ description: "关键词，匹配标题/正文/作者/笔记 ID" })),
+    tag_id: Type.Optional(Type.Integer({ minimum: 1, description: "按标签 ID 过滤" })),
+    limit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: 20, default: 10, description: "返回条数，默认 10，最多 20" }),
+    ),
+  }),
+
+  "library_note_detail": Type.Object({
+    note_id: Type.Integer({ minimum: 1, description: "笔记 ID（内容库主键，不是小红书 note_id），必填" }),
+    comment_limit: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: 200, default: 20, description: "最多返回多少条评论，默认 20" }),
+    ),
+  }),
 };
 
 /** 启动时断言：SKILL_CATALOG 与 TOOL_SCHEMAS 必须一一对应，避免漏配 */
