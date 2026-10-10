@@ -62,6 +62,16 @@
 
 ---
 
+## §二·补 P1-D：会话删除（前端）
+
+- **日期**：2026-10-10；状态：**已实现，待用户浏览器点验**（设计见 `docs/superpowers/specs/2026-10-10-agent-conversation-delete-design.md`，计划见 `docs/superpowers/plans/2026-10-10-agent-conversation-delete.md`）
+- **改动**：服务端零改动（接口 8 已存在）；前端 4 处 —— `api.ts` 的 `deleteAgentConversation`、`globals.css` 的 `.agent-conv-delete` 悬停显隐、`conversation-list.tsx` 的行内删除 + Popconfirm、`page.tsx` 的 `handleDelete`（删当前选中会话时清空工作台）
+- **已知取舍**：① 运行中的会话不做前端禁用，以服务端 409 + 拦截器 toast 为准（左栏「执行中」标记来自快照、可能滞后）；② 删除入口默认隐藏，悬停会话行**或键盘 Tab 到该按钮**时出现（用 opacity + pointer-events 而非 visibility —— 后者不可聚焦，已用 headless Chrome 实测过两条路径）；触屏用户仍走不到（与全站列表项不可键盘访问的历史局限同源）
+- **回归**：`vitest` 30 文件 / 359 用例、`tsc` 无输出、`next build` 通过、`agent-api-smoke.ts` 9/9（接口层无回归）
+- **验收**：浏览器 4 步（见计划 Task 2 Step 5）——删非当前会话 / 删当前会话回空态 / 删执行中会话被 409 拦下
+
+---
+
 ## 三、B 块（已完成，仅供参考）
 
 B 块（前端三栏界面 + SSE 实时过程 + 两项验收修复）已合并到 `main` 并推送，细节见 `HANDOFF-agent-p1b.md`。C 的新工具直接在 B 的三栏界面里被调用，而**界面无需为新工具做任何改动**：工件靠 `ArtifactSpec` 声明（`kind`/`idField`/`hrefPrefix`）、卡片靠 `summarize` —— 两者都在 `SkillDefinition` 里。

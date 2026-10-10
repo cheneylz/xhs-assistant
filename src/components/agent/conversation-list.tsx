@@ -5,7 +5,7 @@
  * updated_at 是「朴素上海墙钟」字符串，直接切片展示 —— 用 new Date() 解析会在
  * 非上海时区的浏览器上显示错。
  *
- * 删除入口只在悬停该行时出现（样式在 globals.css 的 .agent-conv-delete），
+ * 删除入口默认隐藏，悬停该行或键盘 Tab 到按钮时出现（样式在 globals.css 的 .agent-conv-delete），
  * 点击必须 stopPropagation，否则会连带触发行的「选中」（P1-D 设计稿 §三.1）。
  */
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
