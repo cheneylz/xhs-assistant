@@ -31,7 +31,7 @@ npx tsc --noEmit        # 期望无输出
 | Task 1 契约类型 + 首屏快照归并 | ✅ 已验收 | `1a8b1fc`（跟进项并入后续提交） |
 | Task 2 SSE 增量归并（幂等） | ✅ 已验收 | `bc08ae1`（含 Task 1 审查跟进） |
 | Task 3 SSE 缓冲解析 + reducer 包装 | ✅ 已验收 | `3b34104`（含 Task 2 审查跟进） |
-| Task 3 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 3 补丁（质量审查修复） | ✅ 已验收 | `5ee0c40` |
 | Task 4 API 封装（6 个函数） | ⬜ 未开始 | |
 | Task 5 use-agent-events（SSE + 重连） | ⬜ 未开始 | |
 | Task 6 conversation-list | ⬜ 未开始 | |
@@ -1833,7 +1833,7 @@ git commit -m "fix(agent-ui): 帧守卫补 payload 校验并补测（Task 3 质�
 
 - [ ] **Step 1: 在 `src/lib/api.ts` 的 `@/types` import 列表里追加类型**
 
-在现有 import 列表（约第 22-106 行，按字母序）中插入：
+在现有 import 列表（约第 5-106 行；列表按功能分组、**不严格按字母序**）中插入 —— 把这 5 个类型作为一组放在列表**开头**（`AuthPayload` 之前）：
 
 ```ts
   AgentArtifactItem,
