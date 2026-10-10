@@ -41,7 +41,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 8 tool-call-card + thinking-indicator | ✅ 已验收 | `f702b4b` |
 | Task 8 补丁（质量审查修复） | ✅ 已验收 | `fe6e425` |
 | Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
-| Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
+| Task 10 /agent 页面 + 侧边栏入口 | 🔶 实现完成，待补丁复审 | `9811360`（含 Task 9 审查跟进） |
+| Task 10 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
@@ -3887,6 +3888,223 @@ git commit -m "feat(agent-ui): /agent 三栏页面接线与侧边栏入口（含
 
 ---
 
+### Task 10 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Modify: `src/app/(protected)/agent/page.tsx`
+
+**为什么独立提交**：Task 10 已提交（`9811360`）后才出的质量审查结论 —— 审查者用 9 个 jsdom 挂载探针实测复现了 **2 项 Critical + 3 项 Important**（全在 React 接线层的竞态守卫上）：① 发送后立刻切会话 → A 的消息/执行中状态泄漏进 B 且清掉 B 的草稿；② **中文输入法合成态按 Enter 会直接发送半成品任务**；③ 首屏加载失败后 `resync` 不会重新武装订阅 → 永久失去直播与 5s 兜底；④ 右栏刷新响应不检查会话 → A 的工件长期显示在 B；⑤ 取消回调会改写新选中会话的执行状态。
+
+- [ ] **Step 1: 修复五处（都在 `page.tsx`）**
+
+**(1) 抽 `applySnapshot`，把「快照 + 重连 + 武装订阅」三件事收进一处（修 I1 的主入口）**
+
+先把类型 import 那行改成：
+
+```tsx
+import type { AgentConversation, AgentConversationDetail } from "@/types";
+```
+
+在 `refreshList` 之后、`resync` 之前新增：
+
+```tsx
+  /**
+   * 应用快照：三件事必须一起做（见文件头的不变量）——
+   *   1) 整体替换状态（snapshot）
+   *   2) 重连 SSE 从快照水位重放（bump streamKey）
+   *   3) 武装订阅（syncedId）—— 漏了这步，首屏失败后 resync 成功了也永远不订阅
+   *      （Task 10 质量审查 I1：页面会永久失去直播通道与 5s 兜底）
+   */
+  const applySnapshot = useCallback((id: number, detail: AgentConversationDetail) => {
+    dispatch({ type: "snapshot", detail });
+    setStreamKey((key) => key + 1);
+    setSyncedId(id);
+  }, []);
+```
+
+把 `resync` 换成：
+
+```tsx
+  /** 重同步：拉首屏快照整体替换，然后重连 SSE 从快照水位重放（见文件头） */
+  const resync = useCallback(async () => {
+    const id = selectionRef.current;
+    if (id === null) return;
+    try {
+      const detail = await fetchAgentConversation(id);
+      if (selectionRef.current !== id) return; // 已切到别的会话，丢弃过期响应
+      applySnapshot(id, detail);
+    } catch {
+      // 静默：下一次交互会再同步
+    }
+  }, [applySnapshot]);
+```
+
+把 `loadDetail` 换成（**注意 catch 里不再置 `setSyncedId(null)`** —— 修 I1 的第二个入口：若 `resync` 先成功（快照已应用、订阅已武装），这里失败再置 null 会把直播通道与兜底一起关掉；而正常路径下 `handleSelect` 本来就先置了 null）：
+
+```tsx
+  const loadDetail = useCallback(
+    async (id: number) => {
+      setDetailLoading(true);
+      try {
+        const detail = await fetchAgentConversation(id);
+        if (selectionRef.current !== id) return;
+        applySnapshot(id, detail);
+      } catch {
+        // 不在这里卸 syncedId（原因见上）；handleSelect 已经把订阅关掉过了
+      } finally {
+        if (selectionRef.current === id) setDetailLoading(false);
+      }
+    },
+    [applySnapshot],
+  );
+```
+
+**(2) `handleSend`：await 之后补守卫（修 C1 —— 串台 + 丢草稿）**
+
+把：
+
+```tsx
+      const result = await sendAgentMessage(id, content);
+      dispatch({
+        type: "runCreated",
+        conversation: result.conversation,
+        message: result.message,
+        run: result.run,
+      });
+      setConversations((items) => upsertConversation(items, result.conversation));
+      setDraft("");
+```
+
+换成：
+
+```tsx
+      const result = await sendAgentMessage(id, content);
+      // 已切走：A 的消息与执行中状态不能写进 B 的时间线，更不能清掉 B 的草稿（Task 10 审查 C1）
+      if (selectionRef.current !== id) return;
+      dispatch({
+        type: "runCreated",
+        conversation: result.conversation,
+        message: result.message,
+        run: result.run,
+      });
+      setConversations((items) => upsertConversation(items, result.conversation));
+      setDraft("");
+```
+
+**(3) `handleCancel`：await 之后补守卫（修 I3）**
+
+把：
+
+```tsx
+  const handleCancel = useCallback(async () => {
+    if (pendingRunId === null) return;
+    setCancelling(true);
+    try {
+      await cancelAgentRun(pendingRunId);
+      dispatch({ type: "runCancelled" });
+      message.success("已取消等待中的任务");
+```
+
+换成：
+
+```tsx
+  const handleCancel = useCallback(async () => {
+    if (pendingRunId === null) return;
+    const id = selectionRef.current;
+    setCancelling(true);
+    try {
+      await cancelAgentRun(pendingRunId);
+      // 已切走：A 的取消结果不能改写 B 的执行中状态（Task 10 审查 I3）
+      if (selectionRef.current !== id) return;
+      dispatch({ type: "runCancelled" });
+      message.success("已取消等待中的任务");
+```
+
+**(4) `handleRefreshArtifacts`：await 之后补守卫（修 I2 —— 右栏串台且长期不消失）**
+
+把：
+
+```tsx
+    setRefreshingArtifacts(true);
+    try {
+      dispatch({ type: "artifacts", items: await fetchAgentArtifacts(id) });
+    } catch {
+```
+
+换成：
+
+```tsx
+    setRefreshingArtifacts(true);
+    try {
+      const items = await fetchAgentArtifacts(id);
+      // 已切走：A 的工件不能写进 B 的右栏（Task 10 审查 I2）
+      if (selectionRef.current !== id) return;
+      dispatch({ type: "artifacts", items });
+    } catch {
+```
+
+**(5) 输入框：Enter 提交排除输入法合成态（修 C2 —— 中文用户回车确认候选词会误发）**
+
+把：
+
+```tsx
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+```
+
+换成：
+
+```tsx
+                onKeyDown={(event) => {
+                  // 输入法合成态里的 Enter 是「确认候选词」，不是提交 —— 误发的代价是让 Agent
+                  // 拿半句话去执行工具（Task 10 审查 C2）。keyCode 229 是部分输入法在
+                  // 合成期的另一种上报方式，一并挡掉。
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing &&
+                    event.nativeEvent.keyCode !== 229
+                  ) {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+```
+
+**(6) 两处注释修正（审查 Minor M3/M2）**
+
+`settleRunStatus` 的注释里那句「一个轻量 GET」不准确 —— 拉的其实是完整首屏契约。把它换成：
+
+```tsx
+   * 只发 runStatus 动作（不动时间线 / 水位 / 工件），因此不需要重连 SSE。
+   * 这一拍拉的是**完整首屏契约**（接口 3，只为读 runs）——执行中每 5s 一次是可接受的代价，
+   * 真嫌重再考虑给接口 3 加字段过滤（登记在交接文档）。
+```
+
+首屏 effect 上方补一行约束说明：
+
+```tsx
+  // 首屏只跑一次：依赖里的 handleSelect 必须是稳定引用（空依赖 useCallback）——
+  // 任何为 loadDetail 加依赖的改动都会让首屏 effect 重跑，把用户强制拉回列表第一项（审查 M2）
+  useEffect(() => {
+```
+
+- [ ] **Step 2: 验证 + 提交**
+
+```bash
+npx tsc --noEmit        # 期望无输出
+npx vitest run          # 期望 26 文件 / 299 用例
+
+git add "src/app/(protected)/agent/page.tsx"
+git commit -m "fix(agent-ui): 页面补五个竞态守卫（切会话丢弃过期响应/输入法回车/失败后重新武装订阅）（Task 10 质量审查修复）"
+```
+
+---
+
 ### Task 11: 工具卡验收夹具（`blocked` / `failed`）
 
 **Files:**
@@ -4041,6 +4259,10 @@ Expected：无 404、无白屏、控制台无报错。
 Expected：过程实时可见；工具卡摘要形如「已保存草稿 #N：《…》」；会话标题在首轮后变为从首条消息派生的标题。
 
 > 两个**不是 bug** 的预期现象（别当缺陷上报）：① 重复点击已选中的会话会让中栏短暂清空再填回（`handleSelect` 有意无条件重载快照）；② 「新建」在途时点列表项，选中会被创建完成后的新会话覆盖（纯外观问题）。
+>
+> **额外两条针对性手测**（Task 10 质量审查用 jsdom 探针复现过的竞态，修完后要在真浏览器里确认修好；都不依赖真实模型）：
+> ① **发送后立刻切会话**：在 A 里点「发送」，200ms 内点左栏 B —— A 的用户气泡**不能**出现在 B 的中栏、B 的输入框草稿**不能**被清空、B 不能出现不属于它的「执行中」。
+> ② **中文输入法回车**：用中文输入法在输入框打字，候选词框弹出时按 Enter（确认候选词）—— **不能**发送；只有候选词上屏后再按一次 Enter 才发送。
 
 - [ ] **Step 3: §7.2 第 3 条 —— 工具卡的 4 种状态**
 
@@ -4122,6 +4344,9 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
    - 工件卡跳转用 `router.push`（`Card onClick`）而不是 `next/link`：键盘不可达、没有 cmd/中键新开标签与预取（与全站 `div onClick` 的 a11y 债同源，P2 可改）
+   - `onRunEnded` 里的 800ms 定时器没随卸载清理（最多一次多余 GET，React 18+ 无告警）；`ConversationList` 未 memo（若加，`onCreate` 必须同时稳定成 useCallback，否则 memo 永远失效）—— Task 12 可用 Profiler 一并量
+   - 详情加载失败时中/右栏显示的是空态文案（「还没有消息…」/「本次会话还没有产出物」）而不是「加载失败」；拦截器已 toast，重新点一次会话可恢复（建议独立改进：加 `detailError` + 重试按钮）
+   - **建议的独立改进项（Task 10 审查提出，值得单独做）**：给页面级竞态守卫加一个 jsdom 挂载冒烟测试。`jsdom` 已在 devDependencies，vitest 支持逐文件 `// @vitest-environment jsdom`（用 `react-dom/client` + `React.createElement` 绕开 `jsx: preserve` 与 `include` 只收 `.test.ts` 的限制），假 fetch 流即可；本次审查正是靠它复现了 4 个接线层缺陷，而纯函数测试结构上抓不到这一类。是否引入属产品决策（D25 说不引前端测试栈）
    - 窄视口：三栏固定宽度加起来约 880px，中栏已设 `minWidth: 420`（低于此靠横向滚动条兜底）；舒适使用建议视口 ≥1280
    - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）；在工具卡展开的 `<pre>` 里滚轮上滚也会冒泡到容器、关闭跟随（语义可辩护，属已知行为）
    - 展开最后一张工具卡不会自动把它滚入视野（下一个内容帧才会跟随滚到底）—— Task 12 浏览器观察项
