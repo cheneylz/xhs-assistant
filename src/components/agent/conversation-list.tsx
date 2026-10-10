@@ -6,7 +6,7 @@
  * 非上海时区的浏览器上显示错。
  */
 import { PlusOutlined } from "@ant-design/icons";
-import { Badge, Button, Empty, Typography } from "antd";
+import { Badge, Button, Empty, Spin, Typography } from "antd";
 
 import type { AgentConversation } from "@/types";
 
@@ -60,6 +60,11 @@ export function ConversationList(props: ConversationListProps) {
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+        {loading && items.length === 0 && (
+          <div style={{ paddingTop: 32, textAlign: "center" }}>
+            <Spin size="small" />
+          </div>
+        )}
         {!loading && items.length === 0 && (
           <div style={{ paddingTop: 32 }}>
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有会话" />
@@ -83,6 +88,7 @@ export function ConversationList(props: ConversationListProps) {
                 {item.status === "running" && <Badge status="processing" />}
                 <Text
                   ellipsis
+                  title={item.title}
                   style={{ flex: 1, fontSize: 13, fontWeight: selected ? 600 : 400, minWidth: 0 }}
                 >
                   {item.title}
