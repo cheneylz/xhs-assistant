@@ -47,7 +47,9 @@ npx tsc --noEmit        # 期望无输出
 | Task 12 自动化回归（vitest/tsc/build/两个 smoke） | ✅ 全绿 | 26 文件/300 用例、build 含 /agent、api-smoke 9/9、P0 通过 |
 | Task 11 工具卡验收夹具（blocked / failed） | ✅ 已验收 | `ac2ec36` |
 | Task 11 补丁（质量审查修复） | ✅ 已验收 | `18b5ef7` |
-| Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
+| 验收发现修复（A markdown / B hot_refresh 原因） | ✅ 已验收 | `f4c7211` `5d363f0` |
+| 验收发现修复·终验小修（气泡 memo + 渲染用例） | ✅ 已验收 | `71871a7` |
+| Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ✅ 已完成 | 用户浏览器验收：第 3/5/6/7 条通过、两项修复生效；自动化：27 文件/304 用例、build 含 `/agent`、api-smoke 9/9、P0 通过；交接文档 `47df7a5` |
 
 **当前基线**：26 文件 / 299 用例全绿，`tsc --noEmit` 无输出。
 
