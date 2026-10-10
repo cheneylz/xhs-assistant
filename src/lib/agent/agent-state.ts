@@ -181,6 +181,8 @@ function buildTimeline(detail: AgentConversationDetail): AgentTimelineItem[] {
     item: AgentTimelineItem | null;
   }> = [];
 
+  // messages 只含 role="user" 的行（服务端契约 listConversationUserMessages）；
+  // 这里**不**再判 role —— 判了只会掩盖契约破坏，而重复渲染会立刻暴露它
   for (const message of detail.messages) {
     sortables.push({
       created_at: message.created_at,
@@ -222,7 +224,7 @@ function buildTimeline(detail: AgentConversationDetail): AgentTimelineItem[] {
     return left.id - right.id;
   });
 
-  return sortables.filter((entry) => entry.item !== null).map((entry) => entry.item as AgentTimelineItem);
+  return sortables.flatMap((entry) => (entry.item === null ? [] : [entry.item]));
 }
 
 /** 首屏 / 重同步：服务端快照是权威，整体替换（含水位与截断标记） */
@@ -243,7 +245,11 @@ export function applyFirstScreen(state: AgentUiState, detail: AgentConversationD
   };
 }
 
-/** 会话列表的局部更新（新建 / 发消息后标题派生 / 列表刷新）：更新的会话置顶（按 updated_at 倒序） */
+/**
+ * 会话列表的局部更新（新建 / 发消息后标题派生 / 列表刷新）：把更新的会话置顶。
+ * 不做按 updated_at 重排 —— 现有调用方传入的必然是刚活跃的会话（新建或刚发过消息），
+ * 置顶即正确；真要做通用排序另说（YAGNI）。
+ */
 export function upsertConversation(items: AgentConversation[], conversation: AgentConversation): AgentConversation[] {
   return [conversation, ...items.filter((item) => item.id !== conversation.id)];
 }
@@ -254,4 +260,133 @@ export function upsertConversation(items: AgentConversation[], conversation: Age
  */
 function hasTimelineKey(state: AgentUiState, key: string): boolean {
   return state.timeline.some((item) => item.key === key);
+}
+
+/** 工具卡补丁：字段缺省表示「本次不动」（不是清空） */
+interface ToolCardPatch {
+  toolName: string;
+  status: string;
+  params?: Record<string, unknown>;
+  summary?: string;
+  durationMs?: number | null;
+  result?: Record<string, unknown> | null;
+}
+
+/** 按 `runId:toolCallId` 归并工具卡：不存在则新建，存在则原地更新 */
+function upsertToolCard(
+  state: AgentUiState,
+  frame: AgentEventItem,
+  toolCallId: string,
+  patch: ToolCardPatch,
+): AgentUiState {
+  const key = toolCardKey(frame.run_id, toolCallId);
+  const index = state.timeline.findIndex((item) => item.key === key);
+
+  if (index === -1) {
+    // 无卡片时新建：跨边界（start 早于快照分界、end 晚于分界）与「有帧无卡」都要能出卡
+    const card: AgentToolCard = {
+      runId: frame.run_id,
+      toolCallId,
+      toolName: patch.toolName,
+      stepIndex: null,
+      status: patch.status,
+      summary: patch.summary ?? "",
+      params: patch.params ?? {},
+      result: patch.result ?? null,
+      resultTruncated: false,
+      errorType: null,
+      durationMs: patch.durationMs ?? null,
+    };
+    return {
+      ...state,
+      timeline: [...state.timeline, { kind: "tool", key, created_at: frame.created_at, tool: card }],
+    };
+  }
+
+  const existing = state.timeline[index];
+  if (existing.kind !== "tool") return state;
+  // 永不把终态卡片降级回「运行中」：重连重放旧 start 帧时不能让卡片退回
+  if (patch.status === "running" && existing.tool.status !== "running") return state;
+
+  const merged: AgentToolCard = {
+    ...existing.tool,
+    toolName: patch.toolName,
+    status: patch.status,
+    ...(patch.params !== undefined ? { params: patch.params } : {}),
+    ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+    ...(patch.durationMs !== undefined ? { durationMs: patch.durationMs } : {}),
+    ...(patch.result !== undefined ? { result: patch.result } : {}),
+  };
+  const timeline = [...state.timeline];
+  timeline[index] = { ...existing, tool: merged };
+  return { ...state, timeline };
+}
+
+/** artifact 帧 → 工件条目（与服务端 serializeArtifact 同源：载荷来自 extractArtifacts） */
+function appendArtifact(state: AgentUiState, frame: AgentEventItem): AgentUiState {
+  const id = Number(frame.payload.id);
+  if (!Number.isFinite(id) || id <= 0) return state;
+  // 幂等：工件以事件 id 去重（首屏 artifacts 与 SSE artifact 帧同源同 event_id）
+  if (state.artifacts.some((item) => item.event_id === frame.id)) return state;
+  const artifact: AgentArtifactItem = {
+    event_id: frame.id,
+    run_id: frame.run_id,
+    kind: typeof frame.payload.kind === "string" ? frame.payload.kind : "",
+    id,
+    title: typeof frame.payload.title === "string" ? frame.payload.title : "",
+    href: typeof frame.payload.href === "string" ? frame.payload.href : "",
+    created_at: frame.created_at,
+  };
+  return { ...state, artifacts: [...state.artifacts, artifact] };
+}
+
+/** SSE 增量帧：按身份幂等归并（见文件头：为什么不做水位门） */
+export function applyEventFrame(state: AgentUiState, frame: AgentEventItem): AgentUiState {
+  // 水位单调前进：噪声帧也要推进，否则重连会把它们整批再拉一次
+  const base = frame.id > state.lastEventId ? { ...state, lastEventId: frame.id } : state;
+
+  if (frame.type === "message_end" || frame.type === "status" || frame.type === "error") {
+    const item = timelineItemFromEvent(frame);
+    // 幂等：同一事件（同 key）已在首屏或前一帧里出现就不再插入
+    if (!item || hasTimelineKey(base, item.key)) return base;
+    return { ...base, timeline: [...base.timeline, item] };
+  }
+
+  if (frame.type === "tool_execution_start") {
+    const toolCallId = typeof frame.payload.toolCallId === "string" ? frame.payload.toolCallId : "";
+    if (!toolCallId) return base;
+    const toolName = typeof frame.payload.toolName === "string" ? frame.payload.toolName : toolCallId;
+    return upsertToolCard(base, frame, toolCallId, {
+      toolName,
+      params: toRecord(frame.payload.args),
+      status: "running",
+    });
+  }
+
+  if (frame.type === "tool_execution_end") {
+    const toolCallId = typeof frame.payload.toolCallId === "string" ? frame.payload.toolCallId : "";
+    if (!toolCallId) return base;
+    const toolName = typeof frame.payload.toolName === "string" ? frame.payload.toolName : toolCallId;
+    const details = toRecord(toRecord(frame.payload.result).details);
+    return upsertToolCard(base, frame, toolCallId, {
+      toolName,
+      status: frame.payload.isError === true ? "failed" : "succeeded",
+      summary: typeof frame.payload.summary === "string" ? frame.payload.summary : "",
+      durationMs: typeof frame.payload.durationMs === "number" ? frame.payload.durationMs : null,
+      result: Object.keys(details).length > 0 ? details : null,
+    });
+  }
+
+  if (frame.type === "artifact") {
+    return appendArtifact(base, frame);
+  }
+
+  if (frame.type === "agent_end") {
+    // 循环结束的唯一可靠信号（服务端不主动关流，不能把它当噪声滤掉）。
+    // 立刻解除「执行中」；pendingRunIds 一并清空 —— 结束的 Run 不可能还在 pending。
+    return { ...base, runStatus: { executing: false, pendingRunIds: [] } };
+  }
+
+  // 其余（message_start / message_update / 未来新增类型）是噪声或不由本 reducer 承担
+  return base;
 }

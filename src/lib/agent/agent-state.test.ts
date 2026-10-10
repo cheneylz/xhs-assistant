@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type {
+  SerializedAgentConversation,
+  SerializedAgentEvent,
+  SerializedAgentMessage,
+  SerializedAgentRun,
+  SerializedArtifact,
+  SerializedToolCall,
+} from "@/app/api/agent/shared";
+import type {
   AgentArtifactItem,
   AgentConversation,
   AgentConversationDetail,
@@ -9,6 +17,7 @@ import type {
   AgentToolCallItem,
 } from "@/types";
 import {
+  applyEventFrame,
   applyFirstScreen,
   createInitialState,
   isActiveRunStatus,
@@ -285,5 +294,242 @@ describe("upsertConversation / isActiveRunStatus（小工具）", () => {
     expect(isActiveRunStatus("running")).toBe(true);
     expect(isActiveRunStatus("succeeded")).toBe(false);
     expect(isActiveRunStatus("cancelled")).toBe(false);
+  });
+});
+
+describe("同秒同 rank 的兜底排序（id 升序）", () => {
+  it("同秒内的多条消息/多条事件按各自自增 id 升序排，且键带各自的命名空间前缀", () => {
+    const sameSecond = "2026-10-10T10:00:07";
+    const state = applyFirstScreen(
+      createInitialState(),
+      buildDetail({
+        // 传入顺序故意打乱：排序必须按 id，而不是依赖数组顺序
+        events: [
+          buildEvent({ id: 21, created_at: sameSecond, payload: { role: "assistant", text: "晚一点的事件" } }),
+          buildEvent({ id: 20, created_at: sameSecond, payload: { role: "assistant", text: "早一点的事件" } }),
+        ],
+        messages: [
+          buildUserMessage({ id: 1, created_at: sameSecond }),
+          buildUserMessage({ id: 2, created_at: sameSecond, content: "第二条" }),
+        ],
+      }),
+    );
+    expect(state.timeline.map((item) => item.kind)).toEqual(["user", "user", "assistant", "assistant"]);
+    expect(state.timeline.map((item) => item.key)).toEqual(["m:1", "m:2", "e:20", "e:21"]);
+    const assistantTexts = state.timeline.flatMap((item) => (item.kind === "assistant" ? [item.text] : []));
+    expect(assistantTexts).toEqual(["早一点的事件", "晚一点的事件"]);
+  });
+});
+
+/**
+ * 契约镜像（类型级断言：本文件能编译通过即为通过）
+ *
+ * `import type` 在编译期完全擦除、不产生运行时依赖（shared.ts 本身也不含 prisma），
+ * 所以这里只借用服务端的类型做结构比对，不会把服务端代码带进客户端包。
+ */
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type SameKeys<A, B> = keyof A extends keyof B ? (keyof B extends keyof A ? true : false) : false;
+/** 互为可赋值 + 键集合一致 = 结构同构（服务端新增可选字段也会被 keyof 比对拦下） */
+type Mirror<A, B> = MutuallyAssignable<A, B> extends true ? SameKeys<A, B> : false;
+
+describe("契约镜像（编译期断言）", () => {
+  it("前端契约类型与服务端 shared.ts 的 Serialized* 同构（漂移 → tsc 失败）", () => {
+    const mirrors: [
+      Mirror<AgentConversation, SerializedAgentConversation>,
+      Mirror<AgentMessageItem, SerializedAgentMessage>,
+      Mirror<AgentEventItem, SerializedAgentEvent>,
+      Mirror<AgentToolCallItem, SerializedToolCall>,
+      Mirror<AgentArtifactItem, SerializedArtifact>,
+      Mirror<AgentRunItem, SerializedAgentRun>,
+    ] = [true, true, true, true, true, true];
+    expect(mirrors.every(Boolean)).toBe(true);
+  });
+});
+
+function buildFrame(overrides: Partial<AgentEventItem> = {}): AgentEventItem {
+  return {
+    id: 50,
+    run_id: 1,
+    type: "message_end",
+    payload: { role: "assistant", text: "我先查一下热点" },
+    created_at: "2026-10-10T10:01:00",
+    ...overrides,
+  };
+}
+
+function buildToolCardState() {
+  return applyFirstScreen(createInitialState(), buildDetail({ latest_event_id: 40 }));
+}
+
+describe("applyEventFrame（SSE 增量归并）", () => {
+  it("助手文本帧追加条目并推进水位", () => {
+    const state = applyEventFrame(buildToolCardState(), buildFrame());
+    expect(state.timeline).toHaveLength(1);
+    expect(state.timeline[0]).toMatchObject({ kind: "assistant", text: "我先查一下热点" });
+    expect(state.lastEventId).toBe(50);
+  });
+
+  it("噪声帧（message_start / message_update）不改状态但推进水位", () => {
+    const before = buildToolCardState();
+    const after = applyEventFrame(
+      applyEventFrame(before, buildFrame({ id: 51, type: "message_start", payload: { role: "assistant" } })),
+      buildFrame({ id: 52, type: "message_update", payload: { role: "assistant", trimmed: true } }),
+    );
+    expect(after.timeline).toEqual(before.timeline);
+    expect(after.lastEventId).toBe(52);
+  });
+
+  it("水位单调：更旧的帧不回退水位", () => {
+    const state = applyEventFrame(buildToolCardState(), buildFrame({ id: 10 }));
+    expect(state.lastEventId).toBe(40);
+  });
+
+  it("重复应用同一帧状态不变（快照与在途帧重叠时的幂等）", () => {
+    const withSnapshotEvent = applyFirstScreen(
+      createInitialState(),
+      buildDetail({ events: [buildEvent({ id: 50 })], latest_event_id: 50 }),
+    );
+    const again = applyEventFrame(withSnapshotEvent, buildFrame({ id: 50 }));
+    expect(again.timeline).toEqual(withSnapshotEvent.timeline);
+    expect(again).toEqual(withSnapshotEvent);
+  });
+
+  it("user / toolResult 的 message_end 不产生条目（渲染规则 3）", () => {
+    const state = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({ payload: { role: "user", trimmed: true } }),
+    );
+    expect(state.timeline).toEqual([]);
+  });
+
+  it("status / error 帧变提示行", () => {
+    const state = applyEventFrame(
+      applyEventFrame(buildToolCardState(), buildFrame({ id: 51, type: "status", payload: { level: "error", message: "运行超过墙钟上限被中止" } })),
+      buildFrame({ id: 52, type: "error", payload: { message: "未配置默认文本模型，无法执行" } }),
+    );
+    expect(state.timeline.map((item) => (item.kind === "notice" ? item.level : "?"))).toEqual(["error", "error"]);
+  });
+
+  it("tool_execution_start 建一张运行中的卡（工具名取帧载荷）", () => {
+    const state = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({
+        id: 60,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: { limit: 50 } },
+        created_at: "2026-10-10T10:01:02",
+      }),
+    );
+    expect(state.timeline).toHaveLength(1);
+    expect(state.timeline[0]).toMatchObject({
+      kind: "tool",
+      key: "1:call_1",
+      tool: { status: "running", toolName: "hot_refresh", params: { limit: 50 }, stepIndex: null },
+    });
+  });
+
+  it("tool_execution_end 更新既有卡：状态、摘要、耗时；并吞掉 result.details", () => {
+    const started = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({ id: 60, type: "tool_execution_start", payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} } }),
+    );
+    const ended = applyEventFrame(
+      started,
+      buildFrame({
+        id: 61,
+        type: "tool_execution_end",
+        payload: {
+          toolCallId: "call_1",
+          toolName: "hot_refresh",
+          result: { details: { collected: 12 }, content: [] },
+          isError: false,
+          durationMs: 2100,
+          summary: "收录 12 条热点",
+        },
+      }),
+    );
+    expect(ended.timeline).toHaveLength(1);
+    expect(ended.timeline[0]).toMatchObject({
+      tool: { status: "succeeded", summary: "收录 12 条热点", durationMs: 2100, result: { collected: 12 } },
+    });
+  });
+
+  it("tool_execution_end 没有既有卡时新建（跨边界 / 有帧无卡的容忍）", () => {
+    const state = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({
+        id: 62,
+        type: "tool_execution_end",
+        payload: { toolCallId: "call_9", toolName: "topic_generate", result: {}, isError: true, durationMs: 300, summary: "未执行：Tool xxx not found" },
+      }),
+    );
+    expect(state.timeline).toHaveLength(1);
+    expect(state.timeline[0]).toMatchObject({
+      kind: "tool",
+      key: "1:call_9",
+      tool: { status: "failed", summary: "未执行：Tool xxx not found", result: null },
+    });
+  });
+
+  it("旧 start 帧不会把终态卡降级回运行中", () => {
+    const succeeded = applyFirstScreen(
+      createInitialState(),
+      buildDetail({ tool_calls: [buildToolCall({ status: "succeeded", summary: "收录 12 条热点" })] }),
+    );
+    const state = applyEventFrame(
+      succeeded,
+      buildFrame({ id: 63, type: "tool_execution_start", payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} } }),
+    );
+    expect(state.timeline[0]).toMatchObject({ tool: { status: "succeeded", summary: "收录 12 条热点" } });
+  });
+
+  it("artifact 帧追加工件，按 event_id 幂等", () => {
+    const frame = buildFrame({
+      id: 70,
+      type: "artifact",
+      payload: { kind: "draft", id: 7, title: "《露营装备清单》", href: "/platforms/xhs/drafts?id=7" },
+    });
+    const once = applyEventFrame(buildToolCardState(), frame);
+    const twice = applyEventFrame(once, frame);
+    expect(once.artifacts).toEqual([
+      {
+        event_id: 70,
+        run_id: 1,
+        kind: "draft",
+        id: 7,
+        title: "《露营装备清单》",
+        href: "/platforms/xhs/drafts?id=7",
+        created_at: "2026-10-10T10:01:00",
+      },
+    ]);
+    expect(twice.artifacts).toHaveLength(1);
+  });
+
+  it("agent_end 解除执行中并清空可取消列表", () => {
+    const executing = applyFirstScreen(
+      createInitialState(),
+      buildDetail({ runs: [buildRun({ id: 9, status: "running" })] }),
+    );
+    expect(executing.runStatus.executing).toBe(true);
+    const ended = applyEventFrame(executing, buildFrame({ id: 80, type: "agent_end", payload: {} }));
+    expect(ended.runStatus).toEqual({ executing: false, pendingRunIds: [] });
+  });
+
+  it("跨 Run 的同名 tool_call_id 归到不同卡片（不做覆盖）", () => {
+    const state = applyEventFrame(
+      applyFirstScreen(
+        createInitialState(),
+        buildDetail({ tool_calls: [buildToolCall({ run_id: 1, status: "succeeded" })] }),
+      ),
+      buildFrame({
+        id: 90,
+        run_id: 2,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} },
+      }),
+    );
+    const tools = state.timeline.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools.map((item) => item.key)).toEqual(["1:call_1", "2:call_1"]);
   });
 });
