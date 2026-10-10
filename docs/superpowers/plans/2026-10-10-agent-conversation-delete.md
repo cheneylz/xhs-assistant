@@ -74,14 +74,18 @@ export async function deleteAgentConversation(conversationId: number): Promise<{
 `src/app/globals.css` 的 `.agent-markdown` 样式块**之后**追加：
 
 ```css
-/* 会话行的删除入口：仅悬停该行（或键盘聚焦到行内按钮）时出现。
-   用 visibility 而非 opacity —— 后者不可见但仍可点击，会留下「看不见的删除按钮」 */
+/* 会话行的删除入口：默认隐藏，悬停该行或键盘聚焦到按钮时出现。
+   用 opacity + pointer-events 而非 visibility —— 后者会让按钮**不可聚焦**，
+   `:focus-within` 永远匹配不上（键盘用户完全走不到）；pointer-events 则补上
+   「不可见却能点」的漏洞 */
 .agent-conv-delete {
-  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 .agent-conv-row:hover .agent-conv-delete,
 .agent-conv-row:focus-within .agent-conv-delete {
-  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
 }
 ```
 
@@ -353,7 +357,7 @@ Expected: 「P1-A 接口层验收全部通过」。
 
 - **日期**：2026-10-10；状态：已实现（设计见 `docs/superpowers/specs/2026-10-10-agent-conversation-delete-design.md`）
 - **改动**：服务端零改动（接口 8 已存在）；前端 3 处 —— `api.ts` 的 `deleteAgentConversation`、`conversation-list.tsx` 的行内悬停删除 + Popconfirm、`page.tsx` 的 `handleDelete`（删当前选中会话时清空工作台）
-- **已知取舍**：运行中的会话不做前端禁用，以服务端 409 + 拦截器 toast 为准（左栏「执行中」标记来自快照、可能滞后）；删除入口只在悬停时出现，触屏/键盘用户走不到（与全站列表项不可键盘访问的历史局限同源，`focus-within` 已给键盘留了一档）
+- **已知取舍**：运行中的会话不做前端禁用，以服务端 409 + 拦截器 toast 为准（左栏「执行中」标记来自快照、可能滞后）；删除入口默认隐藏，悬停会话行**或键盘 Tab 到该按钮**时出现（`.agent-conv-delete` 用 opacity + pointer-events 而非 visibility —— 后者不可聚焦）；触屏用户仍走不到（与全站列表项不可键盘访问的历史局限同源）
 - **验收**：`vitest` / `tsc` / `next build` / `agent-api-smoke.ts` 全过；浏览器交互由用户点验
 ```
 
