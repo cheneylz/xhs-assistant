@@ -40,7 +40,7 @@ npx tsc --noEmit        # 期望无输出
 | Task 7 补丁（质量审查修复） | ✅ 已验收 | `9faaf01` |
 | Task 8 tool-call-card + thinking-indicator | ✅ 已验收 | `f702b4b` |
 | Task 8 补丁（质量审查修复） | ✅ 已验收 | `fe6e425` |
-| Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
+| Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
 | Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
@@ -3335,11 +3335,147 @@ git commit -m "feat(agent-ui): 右栏工件面板与工件卡（常驻 + 空态 
 **Files:**
 - Create: `src/app/(protected)/agent/page.tsx`
 - Modify: `src/components/layout/app-shell.tsx:55-73`（`mainNavItems` 数组开头插入一项）
+- Modify: `src/components/agent/artifact-panel.tsx` / `artifact-card.tsx`（Step 0 的 Task 9 审查跟进）
 
 **定位**：全部接线。三条关键规则（写代码前先读 `agent-state.ts` 文件头）：
 1. **快照与连接配对**：应用快照后必须重连（`streamKey + 1`），从快照水位重放；
 2. **发送 / 取消 / agent_end 之后的重同步**：`agent_end` 延迟 800ms 再拉（worker 才写完 Run 终态与会话 idle）；发送 409 / 取消 409 时也重同步，把本地「执行中」状态对齐；
 3. **错误提示不重复**：axios 拦截器已统一 toast，页面只在需要恢复状态时 `resync`，不再 `message.error`。
+
+- [ ] **Step 0: 先落地 Task 9 质量审查的 5 项跟进（`artifact-panel.tsx` + `artifact-card.tsx`，与 Task 10 同一次提交）**
+
+来自 Task 9 的代码质量审查（结论 Yes；其中「面板每帧全量重渲染」经 Profiler 实测：N=20 时每轮约多烧 4.7s CPU —— memo 后降到 ~0）。
+
+**(1) `artifact-panel.tsx` 整文件替换**（memo + `loading` + `disabled` 两个新 prop，见下方 Step 2 调用点的配套改动）：
+
+```tsx
+"use client";
+/**
+ * 右栏：工件面板（D20 常驻 + 空态；接口 6 仅供右栏单独刷新）
+ *
+ * memo：页面每帧 SSE 都会重渲染，而 artifacts 的数组引用只在「工件帧 / 快照 / 右栏刷新」时
+ * 变化（噪声帧只推进水位）—— 与 MemoMessageStream / ToolCallCard 同一取舍。
+ * 依赖调用方传稳定引用（页面的 handleRefreshArtifacts 是 useCallback），内联箭头会让它永远失效。
+ */
+import { memo } from "react";
+import { ReloadOutlined } from "@ant-design/icons";
+import { Button, Empty, Spin, Typography } from "antd";
+
+import type { AgentArtifactItem } from "@/types";
+import { ArtifactCard } from "./artifact-card";
+
+const { Text } = Typography;
+
+interface ArtifactPanelProps {
+  artifacts: AgentArtifactItem[];
+  truncated: boolean;
+  /** 快照加载中（未选中会话时为 false）：只在列表为空时展示 spinner，避免「还没有产出物」谎报 */
+  loading: boolean;
+  refreshing: boolean;
+  /** 未选中会话时禁用刷新（否则点了没有任何反馈） */
+  disabled: boolean;
+  onRefresh: () => void;
+}
+
+export const ArtifactPanel = memo(function ArtifactPanel({
+  artifacts,
+  truncated,
+  loading,
+  refreshing,
+  disabled,
+  onRefresh,
+}: ArtifactPanelProps) {
+  // 最新的排最上面（服务端按时间升序返回，展示时反转）
+  const ordered = [...artifacts].reverse();
+
+  return (
+    <div
+      style={{
+        width: 320,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "#fff",
+        border: "1px solid #f0f0f0",
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "10px 12px",
+          borderBottom: "1px solid #f0f0f0",
+        }}
+      >
+        <Text strong style={{ fontSize: 14 }}>
+          产出物
+        </Text>
+        <Button
+          type="text"
+          size="small"
+          icon={<ReloadOutlined />}
+          loading={refreshing}
+          disabled={disabled}
+          onClick={onRefresh}
+        />
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+        {loading && ordered.length === 0 && (
+          <div style={{ paddingTop: 32, textAlign: "center" }}>
+            <Spin size="small" />
+          </div>
+        )}
+        {!loading && ordered.length === 0 && (
+          <div style={{ paddingTop: 32 }}>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次会话还没有产出物" />
+          </div>
+        )}
+        {ordered.map((artifact) => (
+          <ArtifactCard key={artifact.event_id} artifact={artifact} />
+        ))}
+        {truncated && (
+          <div style={{ textAlign: "center", padding: "8px 0" }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              仅显示最新 200 条产出物
+            </Text>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+```
+
+**(2) `artifact-card.tsx` 三处小改**：
+
+标题加原生 tooltip（截断后可读全，与 `conversation-list` 一致）：
+
+```tsx
+        <Text ellipsis title={artifact.title} style={{ flex: 1, fontSize: 13, minWidth: 0 }}>
+          {artifact.title || `#${artifact.id}`}
+        </Text>
+```
+
+去掉多余的 cursor（antd 的 `hoverable` 已经给了 pointer，不 hoverable 时自然是 default）：
+
+```tsx
+      style={{ marginBottom: 8 }}
+```
+（即把 `style={{ marginBottom: 8, cursor: clickable ? "pointer" : "default" }}` 换成上面一行）
+
+时间行改成条件渲染（`formatDateTime` 恒为 19 字符，原来的三元兜底是死分支，且会渲染一个空的 11px 文本行）：
+
+```tsx
+      {artifact.created_at.length >= 16 && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {artifact.created_at.slice(11, 16)}
+        </Text>
+      )}
+```
 
 - [ ] **Step 1: 侧边栏入口（`app-shell.tsx`）**
 
@@ -3626,7 +3762,9 @@ export default function AgentWorkspacePage() {
       <div
         style={{
           flex: 1,
-          minWidth: 0,
+          // 两栏固定 260 + 320、左右 sider 与内边距约 300 —— 窄视口下给中栏留一个下限，
+          // 靠 Content 的 overflow 出横向滚动条，而不是把消息流挤成一条缝
+          minWidth: 420,
           display: "flex",
           flexDirection: "column",
           background: "#fff",
@@ -3715,8 +3853,10 @@ export default function AgentWorkspacePage() {
       <ArtifactPanel
         artifacts={state.artifacts}
         truncated={state.artifactsTruncated}
+        loading={detailLoading}
         refreshing={refreshingArtifacts}
-        onRefresh={() => void handleRefreshArtifacts()}
+        disabled={selectedId === null}
+        onRefresh={handleRefreshArtifacts}
       />
     </div>
   );
@@ -3741,8 +3881,8 @@ npm run dev
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/app/\(protected\)/agent/page.tsx src/components/layout/app-shell.tsx
-git commit -m "feat(agent-ui): /agent 三栏页面接线与侧边栏入口"
+git add "src/app/(protected)/agent/page.tsx" src/components/layout/app-shell.tsx src/components/agent/artifact-panel.tsx src/components/agent/artifact-card.tsx
+git commit -m "feat(agent-ui): /agent 三栏页面接线与侧边栏入口（含 Task 9 审查跟进：面板 memo 与加载/禁用态）"
 ```
 
 ---
@@ -3981,6 +4121,8 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 全站列表项都不可键盘访问（`div onClick`，无 `role`/`tabIndex`/`onKeyDown`，与既有页面一致）—— 本组件的会话行同此，登记为全站 a11y 债，建议独立改进项
    - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
+   - 工件卡跳转用 `router.push`（`Card onClick`）而不是 `next/link`：键盘不可达、没有 cmd/中键新开标签与预取（与全站 `div onClick` 的 a11y 债同源，P2 可改）
+   - 窄视口：三栏固定宽度加起来约 880px，中栏已设 `minWidth: 420`（低于此靠横向滚动条兜底）；舒适使用建议视口 ≥1280
    - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）；在工具卡展开的 `<pre>` 里滚轮上滚也会冒泡到容器、关闭跟随（语义可辩护，属已知行为）
    - 展开最后一张工具卡不会自动把它滚入视野（下一个内容帧才会跟随滚到底）—— Task 12 浏览器观察项
    - 两个 4000 的口径不同：服务端 `shared.ts` 按**紧凑 JSON** 截断、前端 `DETAIL_TEXT_LIMIT` 按**pretty-print 后**字符数（后者是前者的兜底，不要「顺手统一」）；服务端那处 `slice` 同样有把代理对切半的风险（本次只修了前端，登记备查）
