@@ -32,14 +32,13 @@ import {
   Button,
   Col,
   Dropdown,
-  Layout,
-  List,
-  Menu,
+  Layout,  Menu,
   Row,
   Space,
   Tag,
   Typography,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { MenuProps } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -134,16 +133,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         {notifications.length === 0 ? (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "#bfbfbf" }}>暂无通知</div>
         ) : (
-          <List
+          <DataList
             dataSource={notifications}
             renderItem={(n) => (
-              <List.Item key={n.id} style={{ padding: "10px 16px", cursor: n.read ? "default" : "pointer", background: n.read ? "transparent" : "#ecf0ff", borderBottom: "1px solid #f0f0f0" }} onClick={() => !n.read && void handleMarkRead(n.id)}>
-                <List.Item.Meta
+              <DataListItem key={n.id} style={{ padding: "10px 16px", cursor: n.read ? "default" : "pointer", background: n.read ? "transparent" : "#ecf0ff", borderBottom: "1px solid #f0f0f0" }} onClick={() => !n.read && void handleMarkRead(n.id)}>
+                <DataListItemMeta
                   avatar={<span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: levelColor(n.level), marginTop: 6 }} />}
                   title={<Text style={{ fontSize: 13 }}>{n.title}</Text>}
                   description={<div>{n.body && <Text type="secondary" style={{ fontSize: 12, display: "block" }}>{n.body}</Text>}<Text type="secondary" style={{ fontSize: 11 }}>{new Date(n.created_at).toLocaleString("zh-CN")}</Text></div>}
                 />
-              </List.Item>
+              </DataListItem>
             )}
           />
         )}

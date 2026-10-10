@@ -13,15 +13,14 @@ import {
   Col,
   Empty,
   Form,
-  Input,
-  List,
-  Row,
+  Input,  Row,
   Space,
   Spin,
   Statistic,
   Tag,
   Typography,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/app-shell";
@@ -327,17 +326,17 @@ export default function XhsKeywordsPage() {
                   ) : null}
 
                   {detail?.trend.matched_notes.length ? (
-                    <List
+                    <DataList
                       size="small"
                       dataSource={detail.trend.matched_notes.slice(0, 3)}
                       style={{ marginBottom: 16 }}
                       renderItem={(note) => (
-                        <List.Item>
-                          <List.Item.Meta
+                        <DataListItem>
+                          <DataListItemMeta
                             title={note.title || note.note_id}
                             description={`${note.author_name || "未知作者"} · 互动 ${note.engagement}`}
                           />
-                        </List.Item>
+                        </DataListItem>
                       )}
                     />
                   ) : null}

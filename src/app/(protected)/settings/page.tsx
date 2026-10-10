@@ -8,6 +8,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons";
 import { Alert, Button, Card, Col, Form, Image, Input, List, Popconfirm, Row, Space, Table, Tag, Typography, message } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/app-shell";
@@ -178,14 +179,14 @@ function KnowledgeBaseCard() {
           {kb.lessons_learned.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <Text strong>闭环学习经验（A-06）</Text>
-              <List
+              <DataList
                 size="small"
                 dataSource={kb.lessons_learned}
                 renderItem={(lesson) => (
-                  <List.Item>
+                  <DataListItem>
                     <Tag color="blue">经验</Tag>
                     <Text>{lesson}</Text>
-                  </List.Item>
+                  </DataListItem>
                 )}
               />
             </div>
@@ -214,12 +215,12 @@ function KnowledgeBaseCard() {
               </Space>
             )}
           </Space>
-          <List
+          <DataList
             size="small"
             dataSource={samples}
             locale={{ emptyText: "暂无风格样本，从内容库挑选 ≥5 篇历史优质笔记效果最佳" }}
             renderItem={(sample) => (
-              <List.Item
+              <DataListItem
                 actions={[
                   <Popconfirm key="del" title="确认删除该样本？" onConfirm={() => void handleDeleteSample(sample.id)}>
                     <Button size="small" danger>
@@ -228,7 +229,7 @@ function KnowledgeBaseCard() {
                   </Popconfirm>,
                 ]}
               >
-                <List.Item.Meta
+                <DataListItemMeta
                   title={sample.title || "(无标题)"}
                   description={
                     sample.style_analysis ? (
@@ -240,7 +241,7 @@ function KnowledgeBaseCard() {
                     )
                   }
                 />
-              </List.Item>
+              </DataListItem>
             )}
           />
         </Form>

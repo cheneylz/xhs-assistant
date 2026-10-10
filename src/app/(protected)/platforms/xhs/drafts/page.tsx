@@ -31,9 +31,7 @@ import {
   Empty,
   Form,
   Image,
-  Input,
-  List,
-  message as antMessage,
+  Input,  message as antMessage,
   Modal,
   Popconfirm,
   Row,
@@ -44,6 +42,7 @@ import {
   Typography,
   Upload,
 } from "antd";
+import { DataList, DataListItem } from "@/components/ui/data-list";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -743,12 +742,12 @@ export default function XhsDraftsPage() {
                 style={{ padding: 24 }}
               />
             ) : (
-              <List
+              <DataList
                 dataSource={drafts}
                 renderItem={(draft) => {
                   const isActive = draft.id === selectedDraftId;
                   return (
-                    <List.Item
+                    <DataListItem
                       onClick={() => selectDraft(draft)}
                       style={{
                         cursor: "pointer",
@@ -814,7 +813,7 @@ export default function XhsDraftsPage() {
                           />
                         </Popconfirm>
                       </div>
-                    </List.Item>
+                    </DataListItem>
                   );
                 }}
                 style={{

@@ -8,6 +8,7 @@ import {
   ScheduleOutlined,
 } from "@ant-design/icons";
 import { Button, Card, Col, Empty, List, Row, Statistic, Typography } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
@@ -83,17 +84,17 @@ export default function XhsDashboard() {
             {overview.hot_topics.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无话题数据" />
             ) : (
-              <List
+              <DataList
                 dataSource={overview.hot_topics}
                 renderItem={(topic) => (
-                  <List.Item
+                  <DataListItem
                     extra={<Text strong>{topic.engagement.toLocaleString()}</Text>}
                   >
-                    <List.Item.Meta
+                    <DataListItemMeta
                       title={topic.keyword}
                       description={`${topic.notes} 篇笔记`}
                     />
-                  </List.Item>
+                  </DataListItem>
                 )}
               />
             )}
@@ -108,15 +109,15 @@ export default function XhsDashboard() {
             {overview.recent_activity.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无最近活动" />
             ) : (
-              <List
+              <DataList
                 dataSource={overview.recent_activity}
                 renderItem={(item) => (
-                  <List.Item>
-                    <List.Item.Meta
+                  <DataListItem>
+                    <DataListItemMeta
                       title={item.title}
                       description={item.status}
                     />
-                  </List.Item>
+                  </DataListItem>
                 )}
               />
             )}

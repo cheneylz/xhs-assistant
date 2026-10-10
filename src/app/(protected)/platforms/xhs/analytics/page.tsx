@@ -19,9 +19,7 @@ import {
   Col,
   Divider,
   Drawer,
-  Empty,
-  List,
-  Progress,
+  Empty,  Progress,
   Row,
   Space,
   Spin,
@@ -31,6 +29,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -363,13 +362,13 @@ export default function XhsAnalyticsPage() {
                   {hotTopics.length === 0 ? (
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无标签或话题数据。" />
                   ) : (
-                    <List
+                    <DataList
                       dataSource={hotTopics}
                       split={false}
                       renderItem={(topic) => {
                         const pct = Math.round((topic.engagement / maxTopicEngagement) * 100);
                         return (
-                          <List.Item style={{ padding: "8px 0", border: "none" }}>
+                          <DataListItem style={{ padding: "8px 0", border: "none" }}>
                             <div style={{ width: "100%" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
                                 <Text style={{ color: "#e8e8e8", fontSize: 13 }}>#{topic.keyword}</Text>
@@ -385,7 +384,7 @@ export default function XhsAnalyticsPage() {
                                 size="small"
                               />
                             </div>
-                          </List.Item>
+                          </DataListItem>
                         );
                       }}
                     />
@@ -454,13 +453,13 @@ export default function XhsAnalyticsPage() {
             style={{ background: "#ffffff", borderColor: "#e8e8e8" }}
             styles={{ body: { padding: "8px 16px" } }}
           >
-            <List
+            <DataList
               dataSource={commentInsights.top_comments}
               locale={{ emptyText: "暂无已保存评论。" }}
               split={false}
               renderItem={(comment) => (
-                <List.Item style={{ padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
-                  <List.Item.Meta
+                <DataListItem style={{ padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <DataListItemMeta
                     avatar={
                       <Avatar
                         size={36}
@@ -482,7 +481,7 @@ export default function XhsAnalyticsPage() {
                       </Space>
                     }
                   />
-                </List.Item>
+                </DataListItem>
               )}
             />
           </Card>
@@ -521,11 +520,11 @@ export default function XhsAnalyticsPage() {
           </Button>
         }
       >
-        <List
+        <DataList
           dataSource={conclusions}
           locale={{ emptyText: "暂无归因结论" }}
           renderItem={(conclusion) => (
-            <List.Item
+            <DataListItem
               actions={[
                 <Button
                   key="save"
@@ -538,11 +537,11 @@ export default function XhsAnalyticsPage() {
                 </Button>,
               ]}
             >
-              <List.Item.Meta
+              <DataListItemMeta
                 title={<Space><Tag color="blue">{conclusion.dimension}</Tag><Text strong>{conclusion.finding}</Text></Space>}
                 description={conclusion.evidence ? <Text type="secondary">{conclusion.evidence}</Text> : undefined}
               />
-            </List.Item>
+            </DataListItem>
           )}
         />
       </Drawer>

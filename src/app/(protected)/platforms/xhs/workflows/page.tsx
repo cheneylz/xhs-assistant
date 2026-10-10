@@ -12,9 +12,7 @@ import {
   Card,
   Collapse,
   Form,
-  Input,
-  List,
-  Modal,
+  Input,  Modal,
   Popconfirm,
   Space,
   Spin,
@@ -24,6 +22,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
@@ -216,11 +215,11 @@ export default function WorkflowsPage() {
             }
             extra={<Button icon={<ReloadOutlined />} onClick={() => void loadAll()}>刷新</Button>}
           >
-            <List
+            <DataList
               dataSource={workflows}
               locale={{ emptyText: "暂无工作流" }}
               renderItem={(workflow) => (
-                <List.Item
+                <DataListItem
                   actions={[
                     <Button
                       key="run"
@@ -233,7 +232,7 @@ export default function WorkflowsPage() {
                     </Button>,
                   ]}
                 >
-                  <List.Item.Meta
+                  <DataListItemMeta
                     title={
                       <Space>
                         <Text strong>{workflow.name}</Text>
@@ -253,7 +252,7 @@ export default function WorkflowsPage() {
                       </div>
                     }
                   />
-                </List.Item>
+                </DataListItem>
               )}
             />
           </Card>
@@ -261,12 +260,12 @@ export default function WorkflowsPage() {
           {/* 执行结果 */}
           {lastResult && (
             <Card size="small" title={`执行结果：${lastResult.workflow_key}（${lastResult.status}）`}>
-              <List
+              <DataList
                 size="small"
                 dataSource={lastResult.steps}
                 renderItem={(step) => (
-                  <List.Item>
-                    <List.Item.Meta
+                  <DataListItem>
+                    <DataListItemMeta
                       title={
                         <Space>
                           <Tag color={step.status === "completed" ? "green" : "red"}>{step.skill_key}</Tag>
@@ -283,7 +282,7 @@ export default function WorkflowsPage() {
                         )
                       }
                     />
-                  </List.Item>
+                  </DataListItem>
                 )}
               />
             </Card>

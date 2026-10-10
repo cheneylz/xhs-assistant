@@ -22,9 +22,7 @@ import {
   Empty,
   Form,
   Image,
-  Input,
-  List,
-  Popconfirm,
+  Input,  Popconfirm,
   Row,
   Select,
   Space,
@@ -32,6 +30,7 @@ import {
   Tag,
   Typography,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import { useEffect, useState } from "react";
@@ -396,10 +395,10 @@ export default function XhsPublishPage() {
               style={panelStyle}
               styles={{ body: { padding: 0 }, header: { borderBottom: "1px solid #e8e8e8" } }}
             >
-              <List
+              <DataList
                 dataSource={filteredJobs}
                 renderItem={(job) => (
-                  <List.Item
+                  <DataListItem
                     onClick={() => handleSelect(job)}
                     style={{
                       cursor: "pointer",
@@ -409,7 +408,7 @@ export default function XhsPublishPage() {
                       transition: "all 0.2s",
                     }}
                   >
-                    <List.Item.Meta
+                    <DataListItemMeta
                       title={<Text ellipsis style={{ maxWidth: "100%", color: "#e8e8e8" }}>{job.title || "未命名"}</Text>}
                       description={
                         <Space orientation="vertical" size={4} style={{ width: "100%" }}>
@@ -421,7 +420,7 @@ export default function XhsPublishPage() {
                         </Space>
                       }
                     />
-                  </List.Item>
+                  </DataListItem>
                 )}
                 style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}
               />
@@ -607,16 +606,16 @@ export default function XhsPublishPage() {
                         style={panelStyle}
                         styles={{ body: cardBodyStyle, header: { borderBottom: "1px solid #e8e8e8" } }}
                       >
-                        <List
+                        <DataList
                           size="small"
                           dataSource={readyChecks}
                           renderItem={(check) => (
-                            <List.Item style={{ padding: "4px 0", border: "none" }}>
+                            <DataListItem style={{ padding: "4px 0", border: "none" }}>
                               <Space>
                                 {check.ok ? <CheckCircleOutlined style={{ color: "#52c41a" }} /> : <ExclamationCircleOutlined style={{ color: "#ff4d4f" }} />}
                                 <Text style={{ color: check.ok ? "#8f8f8f" : "#ff4d4f", fontSize: 13 }}>{check.label}</Text>
                               </Space>
-                            </List.Item>
+                            </DataListItem>
                           )}
                         />
                         {selectedJob.external_note_id && (
@@ -637,11 +636,11 @@ export default function XhsPublishPage() {
       {/* D-01 智能排期推荐 */}
       <Drawer title="智能排期推荐" open={showSchedules} onClose={() => setShowSchedules(false)} size={460}>
         <Alert type="info" showIcon style={{ marginBottom: 12 }} title={scheduleReason || "基于账号历史发布时段互动高峰推荐，单账号每日不超过 3 条。"} />
-        <List
+        <DataList
           dataSource={scheduleItems}
           locale={{ emptyText: "当前无可用推荐时段（可能已达库存缓冲上限）" }}
           renderItem={(item) => (
-            <List.Item
+            <DataListItem
               actions={[
                 <Button
                   key="apply"
@@ -654,11 +653,11 @@ export default function XhsPublishPage() {
                 </Button>,
               ]}
             >
-              <List.Item.Meta
+              <DataListItemMeta
                 title={item.suggested_at ? item.suggested_at.replace("T", " ") : "未指定时间"}
                 description={<Text type="secondary">{item.reason}</Text>}
               />
-            </List.Item>
+            </DataListItem>
           )}
         />
       </Drawer>

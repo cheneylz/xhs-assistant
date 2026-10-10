@@ -17,9 +17,7 @@ import {
   Drawer,
   Form,
   Input,
-  InputNumber,
-  List,
-  Modal,
+  InputNumber,  Modal,
   Popconfirm,
   Select,
   Space,
@@ -29,6 +27,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
@@ -358,11 +357,11 @@ export default function PlannerPage() {
                   </>
                 )}
               </Space>
-              <List
+              <DataList
                 size="small"
                 dataSource={reports.slice(0, 5)}
                 renderItem={(report) => (
-                  <List.Item
+                  <DataListItem
                     actions={[
                       <Button key="view" size="small" type="link" onClick={() => { setReportDetail(report); setShowReport(true); }}>
                         查看报告
@@ -379,11 +378,11 @@ export default function PlannerPage() {
                       checked={selectedReportIds.includes(report.id)}
                       onChange={(e) => toggleSelect(selectedReportIds, setSelectedReportIds, report.id, e.target.checked)}
                     />
-                    <List.Item.Meta
+                    <DataListItemMeta
                       title={report.keyword}
                       description={`${report.range_days} 天范围 · ${report.sample_notes.length} 个爆款样本 · ${formatShanghaiTime(report.created_at)}`}
                     />
-                  </List.Item>
+                  </DataListItem>
                 )}
               />
             </div>
@@ -432,12 +431,12 @@ export default function PlannerPage() {
                 </>
               )}
             </Space>
-            <List
+            <DataList
               size="small"
               locale={{ emptyText: "暂无选题，点击「生成选题」基于知识库+热点+爆款结构生成" }}
               dataSource={suggestions}
               renderItem={(suggestion) => (
-                <List.Item
+                <DataListItem
                   actions={[
                     suggestion.status === "open" ? (
                       <Popconfirm key="accept" title="加入内容生产队列（生成草稿）？" onConfirm={() => void handleAccept(suggestion)}>
@@ -460,7 +459,7 @@ export default function PlannerPage() {
                     checked={selectedSuggestionIds.includes(suggestion.id)}
                     onChange={(e) => toggleSelect(selectedSuggestionIds, setSelectedSuggestionIds, suggestion.id, e.target.checked)}
                   />
-                  <List.Item.Meta
+                  <DataListItemMeta
                     title={
                       <Space wrap>
                         <Text strong>{suggestion.title}</Text>
@@ -477,7 +476,7 @@ export default function PlannerPage() {
                       </Space>
                     }
                   />
-                </List.Item>
+                </DataListItem>
               )}
             />
           </div>
@@ -487,16 +486,16 @@ export default function PlannerPage() {
       {/* 关键词热度趋势 */}
       <Drawer title={`热度趋势：${historyDrawer?.keyword ?? ""}`} open={Boolean(historyDrawer)} onClose={() => setHistoryDrawer(null)} size={420}>
         {historyDrawer && (
-          <List
+          <DataList
             size="small"
             dataSource={historyDrawer.items}
             renderItem={(item) => (
-              <List.Item>
-                <List.Item.Meta
+              <DataListItem>
+                <DataListItemMeta
                   title={`${item.snap_at} · 热度 ${item.heat_score}`}
                   description={`排名 ${item.rank} · ${item.rise_speed > 0 ? `上升 ${item.rise_speed}%` : item.rise_speed < 0 ? `下降 ${item.rise_speed}%` : "持平"}`}
                 />
-              </List.Item>
+              </DataListItem>
             )}
           />
         )}
@@ -518,11 +517,11 @@ export default function PlannerPage() {
               <ReportSection title="📄 正文框架" items={reportDetail.body_patterns} />
               <ReportSection title="💬 互动引导" items={reportDetail.engage_patterns} />
               <Card size="small" title={`分析样本（${reportDetail.sample_notes.length} 条低粉高互动笔记）`}>
-                <List
+                <DataList
                   size="small"
                   dataSource={reportDetail.sample_notes}
                   renderItem={(sample) => (
-                    <List.Item
+                    <DataListItem
                       actions={
                         sample.note_url
                           ? [
@@ -533,12 +532,12 @@ export default function PlannerPage() {
                           : undefined
                       }
                     >
-                      <List.Item.Meta
+                      <DataListItemMeta
                         avatar={sample.cover_url ? <Avatar shape="square" size={40} src={sample.cover_url} /> : null}
                         title={sample.title}
                         description={`@${sample.author} · 赞 ${sample.likes} 藏 ${sample.collects} 评 ${sample.comments}`}
                       />
-                    </List.Item>
+                    </DataListItem>
                   )}
                 />
               </Card>
@@ -553,13 +552,13 @@ export default function PlannerPage() {
 function ReportSection({ title, items }: { title: string; items: string[] }) {
   return (
     <Card size="small" title={title}>
-      <List
+      <DataList
         size="small"
         dataSource={items}
         renderItem={(item) => (
-          <List.Item>
+          <DataListItem>
             <Paragraph style={{ margin: 0 }}>▶ {item}</Paragraph>
-          </List.Item>
+          </DataListItem>
         )}
       />
     </Card>

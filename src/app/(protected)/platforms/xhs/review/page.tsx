@@ -18,9 +18,7 @@ import {
   Descriptions,
   Drawer,
   Form,
-  Input,
-  List,
-  Modal,
+  Input,  Modal,
   Popconfirm,
   Select,
   Space,
@@ -29,6 +27,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
@@ -469,11 +468,11 @@ export default function ReviewPage() {
               {detail.findings.length === 0 ? (
                 <Alert type="success" showIcon title="未发现风险点" />
               ) : (
-                <List
+                <DataList
                   dataSource={detail.findings}
                   renderItem={(finding: ReviewFinding) => (
-                    <List.Item>
-                      <List.Item.Meta
+                    <DataListItem>
+                      <DataListItemMeta
                         title={
                           <Space wrap>
                             <Tag color={finding.gate === "claim" ? "geekblue" : finding.gate === "originality" ? "purple" : "blue"}>
@@ -501,7 +500,7 @@ export default function ReviewPage() {
                           </div>
                         }
                       />
-                    </List.Item>
+                    </DataListItem>
                   )}
                 />
               )}

@@ -12,9 +12,7 @@ import {
   Button,
   Card,
   Form,
-  Input,
-  List,
-  Modal,
+  Input,  Modal,
   Popconfirm,
   Select,
   Space,
@@ -23,6 +21,7 @@ import {
   Typography,
   message,
 } from "antd";
+import { DataList, DataListItem, DataListItemMeta } from "@/components/ui/data-list";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
@@ -290,12 +289,12 @@ export default function CommentReplyPage() {
             </Form.Item>
           </Space>
         </Form>
-        <List
+        <DataList
           size="small"
           dataSource={rules}
           locale={{ emptyText: "暂无自定义规则（无模型时会按关键词规则匹配）" }}
           renderItem={(rule) => (
-            <List.Item
+            <DataListItem
               actions={[
                 <Button key="toggle" size="small" onClick={() => void handleToggleRule(rule)}>
                   {rule.enabled ? "停用" : "启用"}
@@ -307,7 +306,7 @@ export default function CommentReplyPage() {
                 </Popconfirm>,
               ]}
             >
-              <List.Item.Meta
+              <DataListItemMeta
                 title={
                   <Space>
                     <Tag color={INTENT_COLOR[rule.intent]}>{INTENT_OPTIONS.find((item) => item.value === rule.intent)?.label ?? rule.intent}</Tag>
@@ -316,7 +315,7 @@ export default function CommentReplyPage() {
                 }
                 description={rule.keywords.length ? `触发词：${rule.keywords.join("、")}` : "任意评论"}
               />
-            </List.Item>
+            </DataListItem>
           )}
         />
       </Modal>
