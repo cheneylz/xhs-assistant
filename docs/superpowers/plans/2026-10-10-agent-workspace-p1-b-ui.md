@@ -43,11 +43,12 @@ npx tsc --noEmit        # 期望无输出
 | Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
 | Task 10 /agent 页面 + 侧边栏入口 | ✅ 已验收 | `9811360`（含 Task 9 审查跟进） |
 | Task 10 补丁（质量审查修复） | ✅ 已验收 | `7973542` |
+| 整体终审补丁（I1 + M1） | ⬜ 未开始 | |
 | Task 11 工具卡验收夹具（blocked / failed） | ✅ 已验收 | `ac2ec36` |
 | Task 11 补丁（质量审查修复） | ✅ 已验收 | `18b5ef7` |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
-**当前基线**：25 文件 / 290 用例全绿，`tsc --noEmit` 无输出。
+**当前基线**：26 文件 / 299 用例全绿，`tsc --noEmit` 无输出。
 
 ---
 
@@ -78,7 +79,7 @@ npx tsc --noEmit        # 期望无输出
 | D2 | 设计稿 §5.3 状态树 `{ messages, toolCalls, artifacts, runStatus }` | 工具卡必须与助手文本按时间**穿插**（中栏是一条流），拆成两个数组得在渲染前再做一次归并排序 | 状态树 `{ conversation, timeline, artifacts, runStatus, lastEventId, *_truncated }`，其中 `timeline` 是已排好序的四类条目（user / assistant / notice / tool）。字段语义等价 |
 | D3 | 设计稿 §5.3 的 `nextPollInterval(state) → number` | A 块实现是 `nextPollInterval(hasActiveRun: boolean)`，已落地并有单测 | 前端按**布尔入参**使用：它决定 **SSE 重连间隔**（服务端用它决定查库节奏，同一函数不漂移） |
 | D4 | 设计稿 §5.4「新消息到达时若用户已手动上滚，则暂停自动滚动并提示」 | 无偏差，但要落到实现细节 | `message-stream` 用「距底 40px 内视为跟随」判定 + 「有新消息 ↓」按钮 |
-| D5 | 交接文档列了 8 个前端文件 | 实际还需要 3 类文件：纯函数模块与其测试（D25 明确要求）、`src/types/index.ts` 与 `src/lib/api.ts` 的追加（项目约定：API 类型与封装都在这两处，见 `fetchXhsOverview` 等 100+ 个同族函数） | 12 个新文件 + 3 个修改（见 §三） |
+| D5 | 交接文档列了 8 个前端文件 | 实际还需要 3 类文件：纯函数模块与其测试（D25 明确要求）、`src/types/index.ts` 与 `src/lib/api.ts` 的追加（项目约定：API 类型与封装都在这两处，见 `fetchXhsOverview` 等 100+ 个同族函数） | 14 个新文件 + 3 个修改（见 §三；D9 剥离展示派生模块后又加了 2 个） |
 | D6 | §7.2 第 3 条要求「阻断」状态渲染正确但**生产不可达** | 交接文档明确「照实现即可，验收时演示不出来」 | 照实现 + 单测覆盖状态映射，**并额外提供一个验收夹具脚本**（往 dev 库插 `blocked` / `failed` 夹具行，刷新即可看到对应状态的卡，用完即删）—— 让第 3 条可见、确定地验收（`failed` 靠真实工具报错不稳定，一并夹具化） |
 | D7 | 设计稿 D20 右栏常驻 + 接口 6「仅供右栏单独刷新」 | 接口 6 需要有入口才能被验收 | 工件面板右上角加一个刷新按钮（`ReloadOutlined`），接接口 6 |
 | D8 | 设计稿把 SSE 当作唯一的实时通道 | 存在一个重连补不回来的毫秒级窗口：worker 先落 `agent_end`、后写 Run 终态，快照恰在窗口内返回时水位越过 `agent_end`（Task 1 质量审查发现） | 前端在执行中每 5s 发一次 `runStatus` 动作，用接口 3 的 `runs` **只校正执行状态**（不动时间线/水位、不重连）；空闲即停 |
@@ -4304,9 +4305,107 @@ git commit -m "fix(agent-ui): 验收夹具脚本守卫与文案（Task 11 质量
 
 ---
 
-### Task 12: 浏览器端到端验收 + 全量回归 + 交接文档
+### 整体终审补丁：I1 + M1（独立提交，Task 12 之前）
 
 **Files:**
+- Modify: `src/app/(protected)/agent/page.tsx`
+- Modify: `src/lib/agent/agent-state.ts` / `agent-state.test.ts`
+
+**为什么**：11 个任务 + 8 个补丁全部验收后，整体终审（看整个分支、不看单个 diff）发现一个 per-task 审查结构上抓不到的缺口：
+
+- **I1（Important）**：首屏快照在途期间输入并发送 → POST 成功把用户气泡插进时间线 → 随后在途快照落地（它的 `messages` 查询早于这次 INSERT）→ `applyFirstScreen` 整体替换 → **用户消息消失**。而 D1 的补救手段（水位重放）覆盖的是事件流派生的内容，**user 消息不在事件流里**（只在快照的 `messages` 字段），所以它是唯一「不可恢复」的窗口。
+- **M1（Minor）**：`isAgentEventItem` 没校验 `created_at` / `run_id`，而渲染层会直接 `created_at.length` —— 与 Task 3 补丁为 `payload` 加守卫的理由同一类（页面没有 error boundary，一帧坏帧整页白屏），只堵了一半。
+
+- [ ] **Step 1: 修复 I1（三道守卫：回调 + 输入框 + 按钮）**
+
+在 `page.tsx` 的 `pendingRunId` 之后新增：
+
+```tsx
+  /** 快照是否已应用到当前选中的会话：未应用前不允许发送（否则在途快照会整体替换时间线、
+   *  抹掉刚发出的用户消息 —— 它不在事件流里，水位重放补不回来。整体终审 I1） */
+  const composerReady = selectedId !== null && syncedId === selectedId;
+```
+
+`handleSend` 的守卫改成（并同步加依赖）：
+
+```tsx
+  const handleSend = useCallback(async () => {
+    const id = selectionRef.current;
+    const content = draft.trim();
+    // syncedId !== id：当前会话的快照还没落地，此时发送会被在途快照抹掉且无法恢复（终审 I1）
+    if (id === null || syncedId !== id || !content || sending || executing) return;
+```
+
+```tsx
+  }, [draft, executing, resync, sending, syncedId]);
+```
+
+输入框与按钮的 disabled 改成：
+
+```tsx
+                disabled={executing || !composerReady}
+```
+
+```tsx
+                    disabled={executing || !composerReady || !draft.trim()}
+```
+
+输入框下方那行提示文案改成（加载期给出可读原因）：
+
+```tsx
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {executing ? "执行中，完成后可继续对话" : composerReady ? "" : "正在加载会话…"}
+                </Text>
+```
+
+- [ ] **Step 2: 修复 M1（帧守卫补两个 typeof + 一条用例）**
+
+`agent-state.ts` 的守卫改成：
+
+```ts
+function isAgentEventItem(value: unknown): value is AgentEventItem {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as { id?: unknown; type?: unknown; payload?: unknown; created_at?: unknown; run_id?: unknown };
+  return (
+    typeof candidate.id === "number" &&
+    typeof candidate.type === "string" &&
+    typeof candidate.created_at === "string" &&
+    typeof candidate.run_id === "number" &&
+    candidate.payload !== null &&
+    typeof candidate.payload === "object" &&
+    !Array.isArray(candidate.payload)
+  );
+}
+```
+
+（守卫上方的注释里补一句：`created_at` / `run_id` 也在校验之列 —— 渲染层会直接 `created_at.length`、键构造会用 `run_id`。）
+
+`agent-state.test.ts` 的「缺 payload / payload 为 null 的帧被跳过」用例扩成两条：
+
+```ts
+  it("缺 payload / payload 为 null 的帧被跳过（不会在 reducer 里解引用崩掉整页）", () => {
+    const buffer =
+      'data: {"id":1,"run_id":1,"type":"status","created_at":"t"}\n\ndata: {"id":2,"run_id":1,"type":"status","payload":null,"created_at":"t"}\n\n';
+    expect(parseSseBuffer(buffer).frames).toEqual([]);
+  });
+
+  it("缺 created_at / run_id 的帧同样被跳过（渲染层会直接读 created_at）", () => {
+    const buffer =
+      'data: {"id":1,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":2,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":3,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\n';
+    const { frames } = parseSseBuffer(buffer);
+    expect(frames.map((item) => item.id)).toEqual([1]);
+  });
+```
+
+- [ ] **Step 3: 验证 + 提交**
+
+```bash
+npx vitest run        # 期望 26 文件 / 300 用例
+npx tsc --noEmit      # 期望无输出
+
+git add "src/app/(protected)/agent/page.tsx" src/lib/agent/agent-state.ts src/lib/agent/agent-state.test.ts
+git commit -m "fix(agent-ui): 快照落地前禁止发送 + 帧守卫补 created_at/run_id（整体终审修复）"
+```
 - Create: `docs/superpowers/HANDOFF-agent-p1b.md`
 - Modify: `docs/superpowers/HANDOFF-agent-p1-remaining.md`（§一 状态行、§五 验收总清单）
 
@@ -4379,7 +4478,7 @@ Expected：两档间隔差 10 倍（与 `SSE_ACTIVE_INTERVAL_MS` / `SSE_IDLE_INT
 - [ ] **Step 8: 全量回归**
 
 ```bash
-npx vitest run              # 期望 25 文件全绿
+npx vitest run              # 期望 26 文件 / 300 用例全绿（终审补丁又加 1 条）
 npx tsc --noEmit            # 期望无输出
 # 停 dev server（陷阱 9）后再跑：
 npx next build              # 期望成功；路由数比 A 块基线 +1（/agent）
@@ -4410,7 +4509,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 「被阻断」靠夹具验收（Task 11）
    - 快照与 `agent_end` 的毫秒级竞态窗口：已由 Task 10 的 `settleRunStatus` 收敛（执行中每 5s 校正一次执行状态）；把成因与窗口登记在这里备查
    - `settleRunStatus` 的过期响应竞态（新旧响应乱序 → executing 短暂抹回 false）：无害且自愈（再发会 409 → 自动重同步），登记备查
-   - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
+   - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现。⚠️ **范围有限**：`Mirror` 只覆盖 6 个行类型，首屏「十个字段」的信封在服务端是匿名对象字面量、没有可镜像的类型（整体终审 M2；改名类漂移靠 `agent-api-smoke.ts` 的运行时断言兜）
    - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
    - 接口 6（工件列表）只返回 `{ items }`，没有截断标记 —— 右栏手动刷新后，截断提示仍是上次快照的（today 无 UI 依赖这条，登记备查）
    - 会话过期不重定向：SSE 的 401 在 refresh 失败后停流（fail-safe），而 `clearAuthTokens()` 不通知 `use-auth`，路由守卫不会跳登录 —— 用户可见行为是「工作台不再实时更新、其余功能照旧」，恢复手段是手动刷新页面（Task 5 审查发现；根治需让 `clearAuthTokens` 通知 `use-auth`，属跨页面的独立改进）
@@ -4421,6 +4520,8 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 工件卡跳转用 `router.push`（`Card onClick`）而不是 `next/link`：键盘不可达、没有 cmd/中键新开标签与预取（与全站 `div onClick` 的 a11y 债同源，P2 可改）
    - `onRunEnded` 里的 800ms 定时器没随卸载清理（最多一次多余 GET，React 18+ 无告警）；`ConversationList` 未 memo（若加，`onCreate` 必须同时稳定成 useCallback，否则 memo 永远失效）—— Task 12 可用 Profiler 一并量
    - 详情加载失败时中/右栏显示的是空态文案（「还没有消息…」/「本次会话还没有产出物」）而不是「加载失败」；拦截器已 toast，重新点一次会话可恢复（建议独立改进：加 `detailError` + 重试按钮）
+   - `refreshAccessToken`（`src/lib/api.ts`）自身也走 axios 实例：refresh token 失效时响应拦截器会再进一次「401 → 刷新」分支（`_authRetry` 限一次，不会无限递归，但会多一次无谓往返）—— 既有实现（任何直接调用 refresh 的调用方同此），B 块是第一个调用方；建议独立改进：拦截器对 refresh 请求自身短路
+   - 重复应用同一 `tool_execution_*` 帧是**值幂等而非引用幂等**（会重建该卡的 `tool` 对象 → 一次多余重渲染）—— `memo` 的命中率描述因此略乐观，无正确性影响（整体终审观察）
    - **建议的独立改进项（Task 10 审查提出，值得单独做）**：给页面级竞态守卫加一个 jsdom 挂载冒烟测试。`jsdom` 已在 devDependencies，vitest 支持逐文件 `// @vitest-environment jsdom`（用 `react-dom/client` + `React.createElement` 绕开 `jsx: preserve` 与 `include` 只收 `.test.ts` 的限制），假 fetch 流即可；本次审查正是靠它复现了 4 个接线层缺陷，而纯函数测试结构上抓不到这一类。是否引入属产品决策（D25 说不引前端测试栈）
    - 窄视口：三栏固定宽度加起来约 880px，中栏已设 `minWidth: 420`（低于此靠横向滚动条兜底）；舒适使用建议视口 ≥1280
    - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）；在工具卡展开的 `<pre>` 里滚轮上滚也会冒泡到容器、关闭跟随（语义可辩护，属已知行为）
