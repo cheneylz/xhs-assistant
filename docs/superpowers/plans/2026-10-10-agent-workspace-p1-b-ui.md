@@ -33,7 +33,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 3 SSE 缓冲解析 + reducer 包装 | ✅ 已验收 | `3b34104`（含 Task 2 审查跟进） |
 | Task 3 补丁（质量审查修复） | ✅ 已验收 | `5ee0c40` |
 | Task 4 API 封装（6 个函数） | ✅ 已验收 | `10f4bc9`（跟进项并入 Task 5） |
-| Task 5 use-agent-events（SSE + 重连） | ⬜ 未开始 | |
+| Task 5 use-agent-events（SSE + 重连） | 🔶 实现完成，待补丁复审 | `a4efbd5`（含 Task 4 审查跟进） |
+| Task 5 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 6 conversation-list | ⬜ 未开始 | |
 | Task 7 message-stream + message-bubble | ⬜ 未开始 | |
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
@@ -2140,6 +2141,127 @@ git commit -m "feat(agent-ui): SSE 订阅 hook（含 Task 4 审查跟进：silen
 
 ---
 
+### Task 5 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Modify: `src/components/agent/use-agent-events.ts`
+
+**为什么独立提交**：Task 5 已提交（`a4efbd5`）后才出的质量审查结论（2 项 Important + 2 项 Minor，其中 Important 一项是注释与真实行为不符、一项是实测确认的监听器累积）。
+
+- [ ] **Step 1: 修复三处**
+
+**(1) 401 分支：改成与真实行为一致的注释 + 可读告警，并给 404/403 与非 SSE 响应加上明确处理**（Important：原注释声称「交给路由守卫跳登录」，但 `clearAuthTokens()` 不通知 `use-auth`，守卫不会重定向 —— 实际是「流停止、页面其余部分照旧」，恢复手段是手动刷新）。把：
+
+```ts
+      if (response.status === 401) {
+        // 长连接期间 access token 可能过期：刷新一次，交给外层循环重连。
+        // 刷新失败（refresh token 也没了）就停流，交给路由守卫跳登录。
+        try {
+          await refreshAccessToken();
+        } catch {
+          disposed = true;
+        }
+        return;
+      }
+      if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
+```
+
+换成：
+
+```ts
+      if (response.status === 401) {
+        // 长连接期间 access token 可能过期：刷新一次，交给外层循环重连。
+        // 刷新失败就停流（fail-safe）：注意**路由守卫不会因此重定向** —— clearAuthTokens()
+        // 不通知 use-auth，守卫只在重新 bootstrap 时才会判到未登录。所以这里的实际用户可见
+        // 行为是「SSE 停止、页面其余部分照旧」，恢复手段是手动刷新页面（登记在交接文档）。
+        try {
+          await refreshAccessToken();
+        } catch {
+          console.warn("[agent] 登录状态刷新失败，SSE 已停止；刷新页面可恢复");
+          disposed = true;
+        }
+        return;
+      }
+      if (response.status === 404 || response.status === 403) {
+        // 会话已不存在 / 无权访问（例如在另一个标签页被删除）：停流，别做无谓的空转重连
+        disposed = true;
+        return;
+      }
+      if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
+      // 非 SSE 响应（例如 dev 环境返回了错误页）会让解析器一帧都拿不到、只剩静默重连 —— 提前给出可读原因
+      if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        throw new Error(`SSE 响应不是事件流：${response.headers.get("content-type") ?? "无 Content-Type"}`);
+      }
+```
+
+**(2) `sleep` 的 abort 监听不要累积**（Important：`{ once: true }` 只在 abort 触发时才移除监听，而 `sleep` 每次重连都会挂一个 —— 持续断线场景下按重连频率线性累积，实测无任何告警）。把：
+
+```ts
+    /** 可被 cleanup 中断的等待（卸载后不残留定时器） */
+    const sleep = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        controller.signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+```
+
+换成：
+
+```ts
+    /**
+     * 可被 cleanup 中断的等待：正常结束时就地摘掉 abort 监听 —— 只依赖 { once: true }
+     * 时监听器要等 abort 才移除，持续断线会让它按重连频率线性累积（且无任何告警）。
+     */
+    const sleep = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          controller.signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, ms);
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+      });
+```
+
+**(3) 给「最新值 ref」模式补一句防误改注释**（Minor：防止后来者把它「修正」成依赖数组，那会让每帧重连）。把文件头的：
+
+```
+ * 它们每次渲染都会变，写进依赖会导致「每一帧都重连」。用「最新值 ref」模式：
+ * 渲染期同步、重连时读取；重连只由 conversationId（会话切换/快照同步完成）与
+ * streamKey（发送消息后、快照替换后主动重启）触发。
+```
+
+换成：
+
+```
+ * 它们每次渲染都会变，写进依赖会导致「每一帧都重连」。用「最新值 ref」模式：
+ * 渲染期同步、重连时读取；重连只由 conversationId（会话切换/快照同步完成）与
+ * streamKey（发送消息后、快照替换后主动重启）触发。
+ * **不要**把 ref 同步改回 useEffect、更不要把值加进依赖数组 —— 后者会让每帧重连。
+```
+
+- [ ] **Step 2: 验证 + 提交**
+
+```bash
+npx tsc --noEmit        # 期望无输出
+npx vitest run          # 期望 25 文件 / 290 用例（本补丁不改纯函数）
+
+git add src/components/agent/use-agent-events.ts
+git commit -m "fix(agent-ui): SSE hook 401/404 处理与 sleep 监听器泄漏（Task 5 质量审查修复）"
+```
+
+---
+
 ### Task 6: 左栏 `conversation-list.tsx`
 
 **Files:**
@@ -2906,7 +3028,9 @@ export default function AgentWorkspacePage() {
     hasActiveRun: executing,
     onEvent: (frame) => dispatch({ type: "frame", frame }),
     onRunEnded: () => {
-      // agent_end：循环已结束。稍等再重同步 —— worker 紧接着才写 Run 终态与会话 idle
+      // agent_end：循环已结束。稍等再重同步 —— worker 紧接着才写 Run 终态与会话 idle。
+      // 重连后 agent_end 可能被重放一次（水位落后一个提交时）→ 至多多一次无害的重同步，
+      // 不做去重。
       window.setTimeout(() => {
         void resync();
         // 首轮结束后标题会按首条消息派生，updated_at 排序也可能变
@@ -3375,6 +3499,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
    - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
    - 接口 6（工件列表）只返回 `{ items }`，没有截断标记 —— 右栏手动刷新后，截断提示仍是上次快照的（today 无 UI 依赖这条，登记备查）
+   - 会话过期不重定向：SSE 的 401 在 refresh 失败后停流（fail-safe），而 `clearAuthTokens()` 不通知 `use-auth`，路由守卫不会跳登录 —— 用户可见行为是「工作台不再实时更新、其余功能照旧」，恢复手段是手动刷新页面（Task 5 审查发现；根治需让 `clearAuthTokens` 通知 `use-auth`，属跨页面的独立改进）
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
