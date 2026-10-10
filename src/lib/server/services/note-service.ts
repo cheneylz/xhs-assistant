@@ -5,7 +5,7 @@
  * 共用同一份查询与序列化实现，而不是两处各写一遍筛选逻辑（与 P0 抽取 skill-catalog 同一模式）。
  *
  * 【本文件不含 http-error / next 依赖】—— 服务层只表达「查不到」（返回 null / outcome 联合），
- * 状态码由路由层决定（与 agent-service.ts 文件头的同一约定）。
+ * 状态码由路由层决定（与 agent-service.ts:336-340 的同一约定）。
  */
 import type { Note, NoteAsset, NoteComment } from "@prisma/client";
 import { prisma } from "../core/db";
@@ -117,6 +117,7 @@ export type NoteSearchResult =
 /**
  * 按条件检索笔记（对应原版 get_notes 的过滤链）。
  * 分页由调用方做：路由用 paginated()，工具用 slice —— 因此这里返回全部命中项。
+ * 前置条件：filter.tagId 须为调用方已校验的整数（校验留在路由层，见 D-C0-d）。
  */
 export async function searchNotes(userId: number, filter: NoteSearchFilter): Promise<NoteSearchResult> {
   const keyword = filter.keyword?.trim() ?? "";

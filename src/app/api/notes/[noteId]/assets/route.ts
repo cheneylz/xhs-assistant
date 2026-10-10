@@ -3,6 +3,7 @@ import { prisma } from "@/lib/server/core/db";
 import { ApiError, notFound } from "@/lib/server/core/http-error";
 import { paginated } from "@/lib/server/core/paginate";
 import { handle, readJson } from "@/lib/server/core/route";
+import { assetDisplayUrl } from "@/lib/server/services/note-service";
 import type { NoteAsset } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -13,11 +14,6 @@ const AddNoteAssetSchema = z.object({
   url: z.string().max(2048).default(""),
   local_path: z.string().max(512).default(""),
 });
-
-/** 素材展示 URL：本地素材走 /api/files/media 静态服务（对应原版 _asset_display_url） */
-function assetDisplayUrl(asset: { localPath: string; url: string }): string {
-  return asset.localPath ? `/api/files/media/${asset.localPath}` : asset.url;
-}
 
 /** 序列化素材（对应原版 _serialize_asset） */
 function serializeAsset(asset: NoteAsset) {

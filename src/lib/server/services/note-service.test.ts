@@ -112,6 +112,17 @@ describe("projectNote（笔记投影）", () => {
   it("raw_json 不是对象（数组/字符串）时不抛错，封面按空串兜底", () => {
     const result = projectNote(makeNote({ rawJson: ["不是对象"] }), []);
     expect(result.cover_url).toBe("");
+    // 字符串按非对象处理；cover_url 不是字符串也不当封面
+    expect(projectNote(makeNote({ rawJson: "不是对象" }), []).cover_url).toBe("");
+    expect(projectNote(makeNote({ rawJson: { cover_url: 123 } }), []).cover_url).toBe("");
+  });
+
+  it("空白 image 素材（url 与 localPath 皆空）时封面为空串且不回退 raw_json（与现状等价，勿改）", () => {
+    const result = projectNote(
+      makeNote({ rawJson: { cover_url: "https://example.com/raw.jpg" } }),
+      [makeAsset({ url: "", localPath: "" })],
+    );
+    expect(result.cover_url).toBe("");
   });
 });
 
