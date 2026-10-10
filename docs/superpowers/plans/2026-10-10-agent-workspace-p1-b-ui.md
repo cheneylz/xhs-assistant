@@ -43,7 +43,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
 | Task 10 /agent 页面 + 侧边栏入口 | ✅ 已验收 | `9811360`（含 Task 9 审查跟进） |
 | Task 10 补丁（质量审查修复） | ✅ 已验收 | `7973542` |
-| Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
+| Task 11 工具卡验收夹具（blocked / failed） | 🔶 实现完成，待补丁复审 | `ac2ec36` |
+| Task 11 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
 **当前基线**：25 文件 / 290 用例全绿，`tsc --noEmit` 无输出。
@@ -4230,6 +4231,79 @@ git commit -m "test(agent-ui): 工具卡验收夹具（blocked / failed，add �
 
 ---
 
+### Task 11 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Modify: `src/scripts/agent-ui-seed-toolcard.ts`
+
+**为什么独立提交**：Task 11 已提交（`ac2ec36`）后才出的质量审查结论（结论 Yes，6 项 Minor 值得顺手改 —— 其中「空终态 Run 的报错会误导刚发过消息的用户」与「failed 夹具断言了具体原因、与 Task 12 真实运行自相矛盾」会影响 Task 12 的人工验收体验）。
+
+- [ ] **Step 1: 六处小改**
+
+**(1)** 原型链守卫（`status in FIXTURES` 对 `toString` 等为 true）：
+
+```ts
+    if (!Object.hasOwn(FIXTURES, status)) {
+```
+
+**(2)** 让 `finally` 的 `$disconnect` 不再成为死代码：
+
+```ts
+main()
+  .catch((error) => {
+    console.error((error as Error).message);
+    // 用 exitCode 而不是 process.exit(1)：后者会让下面的 finally（$disconnect）成为死代码
+    process.exitCode = 1;
+  })
+  .finally(() => prisma.$disconnect());
+```
+
+**(3)** stepIndex 的注释因果修正（排序靠 `created_at`，与 stepIndex 无关）：
+
+```ts
+      // 序号只作审计透传（前端不排序、不展示）；卡片落在时间线末尾靠的是 createdAt 取当前时刻
+      stepIndex: await prisma.agentToolCall.count({ where: { runId: run.id } }),
+```
+
+**(4)** 没有终态 Run 时的报错别误导刚发过消息的用户：
+
+```ts
+  if (!run) throw new Error("库里没有已结束的 Run（若刚发过消息，等这一轮跑完再执行本脚本），先在 /agent 里跑一轮任务");
+```
+
+**(5)** 幂等提示带上位置（否则用户不知道卡在哪个会话里）：
+
+```ts
+  if (existing) {
+    console.log(`夹具行已存在（id=${existing.id}，Run #${run.id} / 会话 #${run.conversationId}），直接刷新页面即可`);
+    return;
+  }
+```
+
+**(6)** `failed` 夹具的原因改中性（原「文本模型未配置」与 Task 12 用真模型跑出来的运行自相矛盾）：
+
+```ts
+  failed: {
+    toolName: "content_note_pack",
+    status: "failed",
+    errorType: "tool_error",
+    summary: "生成失败：模型调用超时（人工构造的验收数据）",
+  },
+```
+
+- [ ] **Step 2: 验证 + 提交**
+
+```bash
+npx tsc --noEmit
+npx tsx src/scripts/agent-ui-seed-toolcard.ts add bogus    # 期望：未知状态：bogus（可用：blocked / failed），exit 1
+npx tsx src/scripts/agent-ui-seed-toolcard.ts remove       # 期望：已删除 0 条夹具行（空库）
+
+git add src/scripts/agent-ui-seed-toolcard.ts
+git commit -m "fix(agent-ui): 验收夹具脚本守卫与文案（Task 11 质量审查修复）"
+```
+
+---
+
 ### Task 12: 浏览器端到端验收 + 全量回归 + 交接文档
 
 **Files:**
@@ -4271,6 +4345,7 @@ Expected：过程实时可见；工具卡摘要形如「已保存草稿 #N：《
   - 真实失败：发一条会让工具报错的指令（例如「生成 999 个选题」这类越界参数）；若模型行为不配合、没有产生失败卡，用下面的夹具兜底（不算未通过，但要记录实际触发了哪一种）。
   - 夹具失败：`npx tsx src/scripts/agent-ui-seed-toolcard.ts add failed` → 刷新 → 出现红色「失败」卡（见 Task 11）。
 - 被阻断：`npx tsx src/scripts/agent-ui-seed-toolcard.ts add blocked` → 刷新 → 出现橙色「被阻断」卡 → 验完 `npx tsx src/scripts/agent-ui-seed-toolcard.ts remove` → 刷新确认消失。
+  （两张夹具卡要**连着种**，这样都挂在最新那个 Run 上、出现在同一个会话里；若中间又跑了新一轮，卡会分到两个 Run，`remove` 仍会一次清掉两条。）
 
 Expected：四种状态的颜色/文案都对；点「详情」能展开入参/结果 JSON；短路未执行（`error_type="not_executed"`）归在「失败」样式里、摘要带「未执行：」前缀。
 
