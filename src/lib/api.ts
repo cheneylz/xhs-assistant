@@ -3,6 +3,11 @@ import axios from "axios";
 import { message } from "antd";
 
 import type {
+  AgentArtifactItem,
+  AgentConversation,
+  AgentConversationDetail,
+  AgentRunItem,
+  AgentSendMessageResponse,
   AuthPayload,
   AutoTask,
   AutoTaskCreatePayload,
@@ -1236,4 +1241,47 @@ export async function fetchAccountHealth(): Promise<{ items: AccountHealth[] }> 
 export async function generateVideoScript(draftId: number): Promise<{ draft_id: number; script: string }> {
   const response = await http.post<{ draft_id: number; script: string }>("/ai/generate-script", { draft_id: draftId });
   return response.data;
+}
+
+// ---------- Agent 工作台（P1-B）----------
+
+/** GET /api/agent/conversations 会话列表（左栏，按更新时间倒序） */
+export async function fetchAgentConversations(): Promise<AgentConversation[]> {
+  const response = await http.get<{ items: AgentConversation[] }>("/agent/conversations");
+  return response.data.items;
+}
+
+/**
+ * POST /api/agent/conversations 新建会话。
+ * 请求体必须发 `{}` —— 空 body 会被 zod 判成非法（P1A 交接 §三 接口 2）。
+ */
+export async function createAgentConversation(title?: string): Promise<AgentConversation> {
+  const response = await http.post<AgentConversation>("/agent/conversations", title ? { title } : {});
+  return response.data;
+}
+
+/** GET /api/agent/conversations/[id] 首屏契约（十个字段） */
+export async function fetchAgentConversation(conversationId: number): Promise<AgentConversationDetail> {
+  const response = await http.get<AgentConversationDetail>(`/agent/conversations/${conversationId}`);
+  return response.data;
+}
+
+/** POST /api/agent/conversations/[id]/messages 发消息建 Run；会话执行中 → 409 */
+export async function sendAgentMessage(conversationId: number, content: string): Promise<AgentSendMessageResponse> {
+  const response = await http.post<AgentSendMessageResponse>(`/agent/conversations/${conversationId}/messages`, {
+    content,
+  });
+  return response.data;
+}
+
+/** POST /api/agent/runs/[runId]/cancel 取消 Run（仅 pending → 200；running / 终态 → 409） */
+export async function cancelAgentRun(runId: number): Promise<AgentRunItem> {
+  const response = await http.post<{ run: AgentRunItem }>(`/agent/runs/${runId}/cancel`);
+  return response.data.run;
+}
+
+/** GET /api/agent/conversations/[id]/artifacts 工件列表（右栏单独刷新用） */
+export async function fetchAgentArtifacts(conversationId: number): Promise<AgentArtifactItem[]> {
+  const response = await http.get<{ items: AgentArtifactItem[] }>(`/agent/conversations/${conversationId}/artifacts`);
+  return response.data.items;
 }
