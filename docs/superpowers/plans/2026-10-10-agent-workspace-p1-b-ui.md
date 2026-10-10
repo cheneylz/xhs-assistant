@@ -38,7 +38,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 6 conversation-list | ✅ 已验收 | `ea5df90`（跟进项并入 Task 7） |
 | Task 7 message-stream + message-bubble | ✅ 已验收 | `6b33cfb`（含 Task 6 审查跟进） |
 | Task 7 补丁（质量审查修复） | ✅ 已验收 | `9faaf01` |
-| Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
+| Task 8 tool-call-card + thinking-indicator | 🔶 实现完成，待补丁复审 | `f702b4b` |
+| Task 8 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
 | Task 11 工具卡验收夹具（blocked / failed） | ⬜ 未开始 | |
@@ -79,6 +80,7 @@ npx tsc --noEmit        # 期望无输出
 | D6 | §7.2 第 3 条要求「阻断」状态渲染正确但**生产不可达** | 交接文档明确「照实现即可，验收时演示不出来」 | 照实现 + 单测覆盖状态映射，**并额外提供一个验收夹具脚本**（往 dev 库插 `blocked` / `failed` 夹具行，刷新即可看到对应状态的卡，用完即删）—— 让第 3 条可见、确定地验收（`failed` 靠真实工具报错不稳定，一并夹具化） |
 | D7 | 设计稿 D20 右栏常驻 + 接口 6「仅供右栏单独刷新」 | 接口 6 需要有入口才能被验收 | 工件面板右上角加一个刷新按钮（`ReloadOutlined`），接接口 6 |
 | D8 | 设计稿把 SSE 当作唯一的实时通道 | 存在一个重连补不回来的毫秒级窗口：worker 先落 `agent_end`、后写 Run 终态，快照恰在窗口内返回时水位越过 `agent_end`（Task 1 质量审查发现） | 前端在执行中每 5s 发一次 `runStatus` 动作，用接口 3 的 `runs` **只校正执行状态**（不动时间线/水位、不重连）；空闲即停 |
+| D9 | 计划原把工具卡的展示派生写在组件内联 | Task 8 质量审查指出：状态映射的兜底分支在编译期抓不到（`Record<string, …>`）、截断/序列化有多处边界，而「4 种状态可辨识」是 §7.2 第 3 条的验收项，却没有任何自动化守卫 | 抽成 `src/lib/agent/tool-card-view.ts` 纯函数 + vitest（D25 的取向）；组件只做渲染 |
 
 ---
 
@@ -90,6 +92,8 @@ npx tsc --noEmit        # 期望无输出
 |---|---|
 | `src/lib/agent/agent-state.ts` | 前端状态归并的唯一真相源：快照替换（`applyFirstScreen`）、事件帧幂等归并（`applyEventFrame`）、SSE 缓冲解析（`parseSseBuffer`）、reducer 包装（`agentReducer`）与若干纯工具 |
 | `src/lib/agent/agent-state.test.ts` | 上者的单测（D25） |
+| `src/lib/agent/tool-card-view.ts` | 工具卡的展示派生纯函数（状态映射 / 耗时格式 / 截断与序列化）；Task 8 审查后从组件里抽出，取得 vitest 覆盖 |
+| `src/lib/agent/tool-card-view.test.ts` | 上者的单测（含 §7.2 第 3 条「4 种状态可辨识」的自动化守卫） |
 
 **新增（前端）**
 
@@ -2892,6 +2896,292 @@ git commit -m "feat(agent-ui): 工具卡（4 种状态 + 展开详情）与执�
 
 ---
 
+### Task 8 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Create: `src/lib/agent/tool-card-view.ts`
+- Create: `src/lib/agent/tool-card-view.test.ts`
+- Modify: `src/components/agent/tool-call-card.tsx`
+
+**为什么独立提交**：Task 8 已提交（`f702b4b`）后才出的质量审查结论（1 项 Important：服务端截断结果被二次转义且暴露内部字段名；4 项 Minor 值得顺手修）。抽出展示派生模块见 §二 D9。
+
+- [ ] **Step 1: 新建 `src/lib/agent/tool-card-view.ts`**
+
+```ts
+/**
+ * 工具卡的展示派生（纯函数，D25：可被 vitest 覆盖的视图逻辑）
+ *
+ * 放在 lib/agent/ 下与 agent-state.ts 并列：本文件不含 React / 服务端依赖，客户端可安全 import。
+ * 抽出来的理由：状态映射的兜底分支在编译期抓不到（Record<string, …>），截断/序列化有多处边界，
+ * 而「4 种状态可辨识」是 §7.2 第 3 条的验收项 —— 需要自动化守卫（Task 8 质量审查建议）。
+ */
+import type { AgentToolCard } from "./agent-state";
+
+/**
+ * 详情区展示上限（首屏的 result 已由服务端按**紧凑 JSON** 截到 4000 字符；
+ * 这里的 4000 是**pretty-print 后**的字符数 —— 两者口径不同，不要「顺手统一」）。
+ */
+export const DETAIL_TEXT_LIMIT = 4000;
+
+export interface ToolStatusView {
+  color: string;
+  label: string;
+}
+
+/** 状态 → 展示：4 种状态都必须可辨识（§7.2 第 3 条）；新增状态要在这里补一行 */
+const STATUS_VIEW: Record<string, ToolStatusView> = {
+  running: { color: "processing", label: "运行中" },
+  succeeded: { color: "success", label: "成功" },
+  failed: { color: "error", label: "失败" },
+  blocked: { color: "warning", label: "被阻断" },
+};
+
+export function statusViewFor(status: string): ToolStatusView {
+  return STATUS_VIEW[status] ?? { color: "default", label: status || "未知" };
+}
+
+/** 耗时（毫秒）→ 「1.2s」；非数字返回 null（不显示）—— 不用 `!== null` 判，防 undefined 漏进来变成「NaNs」 */
+export function formatToolDuration(durationMs: number | null | undefined): string | null {
+  return typeof durationMs === "number" ? `${(durationMs / 1000).toFixed(1)}s` : null;
+}
+
+/** 截断到上限；截断点落在代理对中间时退一格，避免渲染出 U+FFFD */
+export function cutForDisplay(text: string, limit: number = DETAIL_TEXT_LIMIT): string {
+  if (text.length <= limit) return text;
+  let cut = text.slice(0, limit);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return `${cut}…（已省略）`;
+}
+
+/** 任意产出 → 展示文本 */
+export function stringifyForDisplay(value: Record<string, unknown> | null): string {
+  if (!value) return "（无）";
+  let text: string;
+  try {
+    text = JSON.stringify(value, null, 2);
+  } catch {
+    // 理论上到不了（值都来自 JSON.parse）；兜一手是因为页面没有 error boundary，
+    // 一次序列化异常会让整个工作台白屏
+    return "（无法序列化）";
+  }
+  return cutForDisplay(text);
+}
+
+/**
+ * 结果的展示文本。
+ * 服务端截断时 result 是 `{ truncated_text: <紧凑 JSON 的前 4000 字符> }` ——
+ * 直接展示那串文本：再 stringify 一次会多一层转义、并暴露内部字段名
+ * （Task 8 质量审查发现的实际渲染问题）。
+ */
+export function resultTextForDisplay(tool: AgentToolCard): string {
+  if (tool.resultTruncated && typeof tool.result?.truncated_text === "string") {
+    return tool.result.truncated_text;
+  }
+  return stringifyForDisplay(tool.result);
+}
+```
+
+- [ ] **Step 2: 新建 `src/lib/agent/tool-card-view.test.ts`**
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { AgentToolCard } from "./agent-state";
+import {
+  cutForDisplay,
+  DETAIL_TEXT_LIMIT,
+  formatToolDuration,
+  resultTextForDisplay,
+  statusViewFor,
+  stringifyForDisplay,
+} from "./tool-card-view";
+
+function buildToolCard(overrides: Partial<AgentToolCard> = {}): AgentToolCard {
+  return {
+    runId: 1,
+    toolCallId: "call_1",
+    toolName: "hot_refresh",
+    stepIndex: 0,
+    status: "succeeded",
+    summary: "",
+    params: {},
+    result: null,
+    resultTruncated: false,
+    errorType: null,
+    durationMs: null,
+    ...overrides,
+  };
+}
+
+describe("statusViewFor（4 种状态 + 兜底）", () => {
+  it("四种状态各有可辨识的颜色与中文标签（§7.2 第 3 条）", () => {
+    expect(statusViewFor("running")).toEqual({ color: "processing", label: "运行中" });
+    expect(statusViewFor("succeeded")).toEqual({ color: "success", label: "成功" });
+    expect(statusViewFor("failed")).toEqual({ color: "error", label: "失败" });
+    expect(statusViewFor("blocked")).toEqual({ color: "warning", label: "被阻断" });
+  });
+
+  it("未知状态兜底显示原始值，空串显示「未知」（不留空白徽标）", () => {
+    expect(statusViewFor("cancelled")).toEqual({ color: "default", label: "cancelled" });
+    expect(statusViewFor("")).toEqual({ color: "default", label: "未知" });
+  });
+});
+
+describe("formatToolDuration", () => {
+  it("毫秒转秒保留一位小数；null / undefined 都不显示（不会出现「NaNs」）", () => {
+    expect(formatToolDuration(2100)).toBe("2.1s");
+    expect(formatToolDuration(0)).toBe("0.0s");
+    expect(formatToolDuration(null)).toBeNull();
+    expect(formatToolDuration(undefined)).toBeNull();
+  });
+});
+
+describe("cutForDisplay / stringifyForDisplay", () => {
+  it("未超上限原样返回；超上限截断并带省略标记", () => {
+    expect(cutForDisplay("abc", 5)).toBe("abc");
+    expect(cutForDisplay("abcdef", 3)).toBe("abc…（已省略）");
+  });
+
+  it("截断点落在代理对中间时退一格（不产生孤立代理项）", () => {
+    // "😀" 占两个 UTF-16 单元：limit=2 时正好切在中间
+    const out = cutForDisplay("a😀b", 2);
+    expect(out).toBe("a…（已省略）");
+    expect(/[\uD800-\uDBFF]/.test(out)).toBe(false);
+  });
+
+  it("null 显示「（无）」；对象 pretty-print", () => {
+    expect(stringifyForDisplay(null)).toBe("（无）");
+    expect(stringifyForDisplay({ collected: 12 })).toBe('{\n  "collected": 12\n}');
+  });
+
+  it(`超过 ${DETAIL_TEXT_LIMIT} 字符时截断（SSE 帧的 result 未截，这里兜底）`, () => {
+    const out = stringifyForDisplay({ text: "a".repeat(DETAIL_TEXT_LIMIT) });
+    expect(out.endsWith("…（已省略）")).toBe(true);
+  });
+});
+
+describe("resultTextForDisplay（服务端截断的结果）", () => {
+  it("resultTruncated 时直接展示 truncated_text（不再二次转义、不暴露内部字段名）", () => {
+    const tool = buildToolCard({
+      resultTruncated: true,
+      result: { truncated_text: '{"text":"AAAA' },
+    });
+    expect(resultTextForDisplay(tool)).toBe('{"text":"AAAA');
+  });
+
+  it("未截断时走 pretty-print；result 为 null 显示「（无）」", () => {
+    expect(resultTextForDisplay(buildToolCard({ result: { collected: 12 } }))).toBe('{\n  "collected": 12\n}');
+    expect(resultTextForDisplay(buildToolCard({ result: null }))).toBe("（无）");
+  });
+});
+```
+
+- [ ] **Step 3: 改写 `tool-call-card.tsx`（整文件替换）**
+
+```tsx
+"use client";
+/**
+ * 工具卡（D21：摘要卡片，摘要由服务端算好）
+ *
+ * 4 种状态都要渲染正确（§7.2 第 3 条）：运行中 / 成功 / 失败 / 被护栏阻断。
+ * 状态来自 agent_tool_calls.status；摘要来自服务端（前端不得 import skill-catalog）。
+ * 展示派生（状态映射 / 耗时格式 / 截断与序列化）抽在 lib/agent/tool-card-view.ts，有 vitest 覆盖。
+ */
+import { memo, useState } from "react";
+import type { CSSProperties } from "react";
+import { Button, Card, Tag, Typography } from "antd";
+
+import type { AgentToolCard } from "@/lib/agent/agent-state";
+import {
+  formatToolDuration,
+  resultTextForDisplay,
+  statusViewFor,
+  stringifyForDisplay,
+} from "@/lib/agent/tool-card-view";
+
+const { Text } = Typography;
+
+/**
+ * memo：工具卡的更新是按 `tool` 对象身份保留的（upsertToolCard 只替换被更新的那张卡），
+ * 其余卡片对象引用不变 —— 包一层可跳过一次流事件里其余卡片的整棵子树重渲染。
+ */
+export const ToolCallCard = memo(function ToolCallCard({ tool }: { tool: AgentToolCard }) {
+  const [expanded, setExpanded] = useState(false);
+  const view = statusViewFor(tool.status);
+  const duration = formatToolDuration(tool.durationMs);
+
+  return (
+    <Card size="small" style={{ marginBottom: 12 }} styles={{ body: { padding: 10 } }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Tag color={view.color} style={{ marginRight: 0 }}>
+          {view.label}
+        </Tag>
+        <Text code style={{ fontSize: 12 }}>
+          {tool.toolName}
+        </Text>
+        {duration !== null && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {duration}
+          </Text>
+        )}
+        <span style={{ flex: 1 }} />
+        <Button type="text" size="small" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "收起" : "详情"}
+        </Button>
+      </div>
+
+      {tool.summary && <div style={{ marginTop: 6, fontSize: 13, lineHeight: 1.6 }}>{tool.summary}</div>}
+
+      {expanded && (
+        <div style={{ marginTop: 8, borderTop: "1px solid #f0f0f0", paddingTop: 8 }}>
+          {tool.errorType && (
+            <div style={{ marginBottom: 6 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                错误类型：{tool.errorType}
+              </Text>
+            </div>
+          )}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            入参
+          </Text>
+          <pre style={preStyle}>{stringifyForDisplay(tool.params)}</pre>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            结果{tool.resultTruncated ? "（服务端已截断，仅存前 4000 字符的紧凑 JSON）" : ""}
+          </Text>
+          <pre style={preStyle}>{resultTextForDisplay(tool)}</pre>
+        </div>
+      )}
+    </Card>
+  );
+});
+
+const preStyle: CSSProperties = {
+  margin: "4px 0 10px",
+  padding: 8,
+  background: "#fafafa",
+  border: "1px solid #f0f0f0",
+  borderRadius: 6,
+  fontSize: 12,
+  lineHeight: 1.5,
+  maxHeight: 240,
+  overflow: "auto",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-all",
+};
+```
+
+- [ ] **Step 4: 验证 + 提交**
+
+```bash
+npx vitest run src/lib/agent/tool-card-view.test.ts   # 期望全绿（新增 6 个用例）
+npx vitest run                                        # 期望 26 文件全绿
+npx tsc --noEmit                                      # 期望无输出
+
+git add src/lib/agent/tool-card-view.ts src/lib/agent/tool-card-view.test.ts src/components/agent/tool-call-card.tsx
+git commit -m "fix(agent-ui): 工具卡展示派生抽模块并修服务端截断结果的二次转义（Task 8 质量审查修复）"
+```
+
+---
+
 ### Task 9: 右栏 `artifact-panel.tsx` + `artifact-card.tsx`
 
 **Files:**
@@ -3691,7 +3981,9 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 全站列表项都不可键盘访问（`div onClick`，无 `role`/`tabIndex`/`onKeyDown`，与既有页面一致）—— 本组件的会话行同此，登记为全站 a11y 债，建议独立改进项
    - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
-   - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）
+   - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）；另：内容不足一屏时上滚也会进入「不跟随」，此时若无 scroll 事件可能短暂弹一次「有新消息 ↓」（点一下即消，审查裁定可接受）；在工具卡展开的 `<pre>` 里滚轮上滚也会冒泡到容器、关闭跟随（语义可辩护，属已知行为）
+   - 展开最后一张工具卡不会自动把它滚入视野（下一个内容帧才会跟随滚到底）—— Task 12 浏览器观察项
+   - 两个 4000 的口径不同：服务端 `shared.ts` 按**紧凑 JSON** 截断、前端 `DETAIL_TEXT_LIMIT` 按**pretty-print 后**字符数（后者是前者的兜底，不要「顺手统一」）；服务端那处 `slice` 同样有把代理对切半的风险（本次只修了前端，登记备查）
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
