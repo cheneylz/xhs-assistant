@@ -4391,7 +4391,7 @@ function isAgentEventItem(value: unknown): value is AgentEventItem {
 
   it("缺 created_at / run_id 的帧同样被跳过（渲染层会直接读 created_at）", () => {
     const buffer =
-      'data: {"id":1,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":2,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":3,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\n';
+      'data: {"id":1,"run_id":1,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":2,"type":"status","payload":{},"created_at":"t"}\n\ndata: {"id":3,"run_id":1,"type":"status","payload":{}}\n\n';
     const { frames } = parseSseBuffer(buffer);
     expect(frames.map((item) => item.id)).toEqual([1]);
   });
@@ -4519,7 +4519,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
    - 工件卡跳转用 `router.push`（`Card onClick`）而不是 `next/link`：键盘不可达、没有 cmd/中键新开标签与预取（与全站 `div onClick` 的 a11y 债同源，P2 可改）
    - `onRunEnded` 里的 800ms 定时器没随卸载清理（最多一次多余 GET，React 18+ 无告警）；`ConversationList` 未 memo（若加，`onCreate` 必须同时稳定成 useCallback，否则 memo 永远失效）—— Task 12 可用 Profiler 一并量
-   - 详情加载失败时中/右栏显示的是空态文案（「还没有消息…」/「本次会话还没有产出物」）而不是「加载失败」；拦截器已 toast，重新点一次会话可恢复（建议独立改进：加 `detailError` + 重试按钮）
+   - 详情加载失败时中/右栏显示的是空态文案（「还没有消息…」/「本次会话还没有产出物」）而不是「加载失败」；拦截器已 toast，重新点一次会话可恢复（建议独立改进：加 `detailError` + 重试按钮）。**终审 I1 之后多一层**：失败时 `syncedId` 保持 null → 输入区一直禁用且提示「正在加载会话…」（措辞在失败态下不准确），恢复手段仍是重新点选该会话
    - `refreshAccessToken`（`src/lib/api.ts`）自身也走 axios 实例：refresh token 失效时响应拦截器会再进一次「401 → 刷新」分支（`_authRetry` 限一次，不会无限递归，但会多一次无谓往返）—— 既有实现（任何直接调用 refresh 的调用方同此），B 块是第一个调用方；建议独立改进：拦截器对 refresh 请求自身短路
    - 重复应用同一 `tool_execution_*` 帧是**值幂等而非引用幂等**（会重建该卡的 `tool` 对象 → 一次多余重渲染）—— `memo` 的命中率描述因此略乐观，无正确性影响（整体终审观察）
    - **建议的独立改进项（Task 10 审查提出，值得单独做）**：给页面级竞态守卫加一个 jsdom 挂载冒烟测试。`jsdom` 已在 devDependencies，vitest 支持逐文件 `// @vitest-environment jsdom`（用 `react-dom/client` + `React.createElement` 绕开 `jsx: preserve` 与 `include` 只收 `.test.ts` 的限制），假 fetch 流即可；本次审查正是靠它复现了 4 个接线层缺陷，而纯函数测试结构上抓不到这一类。是否引入属产品决策（D25 说不引前端测试栈）
