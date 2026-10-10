@@ -4636,7 +4636,7 @@ export function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
 
 ```bash
 npx tsc --noEmit        # 期望无输出
-npx vitest run          # 期望 26 文件 / 302 用例（含新用例）
+npx vitest run          # 期望 26 文件 / 301 用例（基线 300 + B 的新用例 1 条）
 
 git add package.json package-lock.json src/app/globals.css src/components/agent/message-bubble.tsx
 git commit -m "feat(agent-ui): 助手文本按 markdown 渲染（react-markdown + remark-gfm）"
@@ -4649,6 +4649,124 @@ git commit -m "fix(agent): hot_refresh 透传采集失败原因并在摘要带�
 
 ```bash
 npx tsx src/scripts/agent-smoke.ts     # 期望「P0 验收全部通过」
+```
+
+---
+
+### 验收发现修复·终验小修（独立提交）
+
+**背景**：A/B 两项验收修复通过规格审查后，质量审查给出 **With fixes**：1 项 Important（`MessageBubble` 漏了 memo —— 全仓库唯一一个重组件没 memo，实测每 run 8–16 次全量重渲染会把在屏助手气泡全部重新解析 markdown，比纯文本重 200–350×，成本随会话长度线性增长）+ 4 项值得顺手改的小项。
+
+**Files:**
+- Modify: `src/components/agent/message-bubble.tsx`
+- Modify: `src/app/globals.css`
+- Modify: `src/lib/server/agent/skill-catalog.ts` / `skill-catalog.test.ts`
+- Create: `src/components/agent/message-bubble.test.ts`
+
+- [ ] **Step 1: `MessageBubble` 包 memo**（与 `ToolCallCard`/`ArtifactPanel`/`MemoMessageStream` 同一取舍；props 是三个原始值，memo 必命中）
+
+把 `message-bubble.tsx` 的 import 与导出改成：
+
+```tsx
+import { memo } from "react";
+import { Typography } from "antd";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+```
+
+```tsx
+/**
+ * memo：时间线每次变化都会重渲染整棵 MessageStream，而助手气泡要跑一遍
+ * micromark→hast→React 元素（比纯文本重两个数量级）—— props 是三个原始值，
+ * memo 可让未变更的气泡跳过解析（与 ToolCallCard / ArtifactPanel 同一取舍）。
+ */
+export const MessageBubble = memo(function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
+  // …函数体不变…
+});
+```
+
+- [ ] **Step 2: 超宽表格给横向滚动**（`globals.css` 的 `.agent-markdown table` 规则里加一行）
+
+```css
+.agent-markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  margin: 6px 0;
+  width: 100%;
+  font-size: 12px;
+}
+```
+
+- [ ] **Step 3: `summarize` 的 0 分支别硬编码 `0`**（负数/异常值时应如实显示）
+
+把 `skill-catalog.ts` 里那行：
+
+```ts
+      return `收录 0 条热点${reason}`;
+```
+
+换成：
+
+```ts
+      return `收录 ${collected} 条热点${reason}`;
+```
+
+- [ ] **Step 4: 给 B 补一条契约断言**（reason 只在 0 条时带出）
+
+在 `skill-catalog.test.ts` 的 hot_refresh 摘要用例里追加一行：
+
+```ts
+    // 契约：reason 解释「为什么是 0」，有产出时不带出来
+    expect(hotRefresh.summarize({ collected: 5, reason: "无种子关键词" })).toBe("收录 5 条热点");
+```
+
+- [ ] **Step 5: 新建 `src/components/agent/message-bubble.test.ts`**（node 环境 + `react-dom/server`；无需新依赖）
+
+```ts
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { MessageBubble } from "./message-bubble";
+
+/** 渲染一个气泡并返回 HTML（vitest 是 node 环境，用 react-dom/server 直出，不需要 jsdom） */
+function renderBubble(role: "user" | "assistant", text: string): string {
+  return renderToStaticMarkup(createElement(MessageBubble, { role, text, created_at: "2026-10-10T10:00:00" }));
+}
+
+describe("MessageBubble 的 markdown 渲染", () => {
+  it("助手文本按 markdown 渲染，并包在 .agent-markdown 容器里", () => {
+    const html = renderBubble("assistant", "**加粗** 与 `代码`\n\n- 一\n- 二");
+    expect(html).toContain('class="agent-markdown"');
+    expect(html).toContain("<strong>加粗</strong>");
+    expect(html).toContain("<code>代码</code>");
+    expect(html).toContain("<li>一</li>");
+  });
+
+  it("用户消息保持纯文本（`#`/`*` 不被解析）", () => {
+    const html = renderBubble("user", "**不是加粗** 与 # 标题");
+    expect(html).not.toContain("<strong>");
+    expect(html).not.toContain("agent-markdown");
+    expect(html).toContain("**不是加粗** 与 # 标题");
+  });
+
+  it("内联 HTML 被转义（XSS 回归守卫：不要给 react-markdown 加 rehype-raw）", () => {
+    const html = renderBubble("assistant", '<script>alert(1)</script>');
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+});
+```
+
+- [ ] **Step 6: 验证 + 提交**
+
+```bash
+npx vitest run src/components/agent/message-bubble.test.ts   # 期望 3 用例通过
+npx vitest run        # 期望 27 文件 / 305 用例
+npx tsc --noEmit      # 期望无输出
+
+git add src/components/agent/message-bubble.tsx src/components/agent/message-bubble.test.ts src/app/globals.css src/lib/server/agent/skill-catalog.ts src/lib/server/agent/skill-catalog.test.ts
+git commit -m "perf(agent-ui): 气泡 memo 化并补 markdown 渲染用例（验收修复终验小修）"
 ```
 
 ---
