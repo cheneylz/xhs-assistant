@@ -32,7 +32,7 @@ npx tsc --noEmit        # 期望无输出
 | Task 2 SSE 增量归并（幂等） | ✅ 已验收 | `bc08ae1`（含 Task 1 审查跟进） |
 | Task 3 SSE 缓冲解析 + reducer 包装 | ✅ 已验收 | `3b34104`（含 Task 2 审查跟进） |
 | Task 3 补丁（质量审查修复） | ✅ 已验收 | `5ee0c40` |
-| Task 4 API 封装（6 个函数） | ⬜ 未开始 | |
+| Task 4 API 封装（6 个函数） | ✅ 已验收 | `10f4bc9`（跟进项并入 Task 5） |
 | Task 5 use-agent-events（SSE + 重连） | ⬜ 未开始 | |
 | Task 6 conversation-list | ⬜ 未开始 | |
 | Task 7 message-stream + message-bubble | ⬜ 未开始 | |
@@ -1911,8 +1911,71 @@ git commit -m "feat(agent-ui): Agent 接口封装（列表/新建/首屏/发消�
 
 **Files:**
 - Create: `src/components/agent/use-agent-events.ts`
+- Modify: `src/lib/api.ts`（Step 0 的 Task 4 审查跟进）
 
 **定位**：连接、解析、按 `nextPollInterval` 降速重连。**不用 EventSource**（带不了 Authorization 头）。
+
+- [ ] **Step 0: 先落地 Task 4 质量审查的 3 项修复（`src/lib/api.ts`，与 Task 5 同一次提交）**
+
+来自 Task 4 的代码质量审查（结论 Yes；三项都是 Minor 但值得修：一处注释指错了失败层、一处会给 5s 轮询叠 toast、一处纯空白标题会弹英文 zod 报文）。
+
+**(1) `createAgentConversation`：修注释 + 加 trim 守卫**。把：
+
+```ts
+/**
+ * POST /api/agent/conversations 新建会话。
+ * 请求体必须发 `{}` —— 空 body 会被 zod 判成非法（P1A 交接 §三 接口 2）。
+ */
+export async function createAgentConversation(title?: string): Promise<AgentConversation> {
+  const response = await http.post<AgentConversation>("/agent/conversations", title ? { title } : {});
+  return response.data;
+}
+```
+
+换成：
+
+```ts
+/**
+ * POST /api/agent/conversations 新建会话。
+ * 请求体必须发 `{}` —— 空 body 会先死在 readJson 的 JSON 解析上（400，P1A 交接 §三 接口 2），
+ * 到不了 zod。
+ * 标题做 trim 守卫：服务端是 `z.string().trim().min(1)`，纯空白会 422 并弹出英文 zod 报文。
+ */
+export async function createAgentConversation(title?: string): Promise<AgentConversation> {
+  const trimmed = title?.trim();
+  const response = await http.post<AgentConversation>("/agent/conversations", trimmed ? { title: trimmed } : {});
+  return response.data;
+}
+```
+
+**(2) `fetchAgentConversation`：加 silent 逃生口**（它会被页面执行中每 5s 的兜底轮询调用，网络抖动会每拍叠一个 toast）。把：
+
+```ts
+/** GET /api/agent/conversations/[id] 首屏契约（十个字段） */
+export async function fetchAgentConversation(conversationId: number): Promise<AgentConversationDetail> {
+  const response = await http.get<AgentConversationDetail>(`/agent/conversations/${conversationId}`);
+  return response.data;
+}
+```
+
+换成（`{ _silent } as never` 与 `fetchSavedNote` 的既有写法一致）：
+
+```ts
+/**
+ * GET /api/agent/conversations/[id] 首屏契约（十个字段）。
+ * silent=true 时不弹错误 toast（页面执行中的 5s 兜底轮询用；静默失败靠下一拍自愈）——
+ * 与 fetchSavedNote 的 silent 逃生口同一写法。
+ */
+export async function fetchAgentConversation(
+  conversationId: number,
+  silent = false,
+): Promise<AgentConversationDetail> {
+  const response = await http.get<AgentConversationDetail>(`/agent/conversations/${conversationId}`, {
+    _silent: silent,
+  } as never);
+  return response.data;
+}
+```
 
 > 渲染开销说明（Task 2 质量审查的提醒）：每个帧都会让 `applyEventFrame` 返回新状态对象（噪声帧也一样），所以「一帧一次 dispatch」在理论上是一帧一次渲染 —— React 18+ 的自动批处理会把**同一个 read 块内**同步循环里的 dispatch 合并成一次渲染（一次运行的 1400 帧来自几百个块，重连后单块最多 200 帧），实测工作量可接受；`lastEventId` 走 ref（不进渲染路径）也是为此。**不要**为了「优化」把帧攒起来延迟处理 —— 那会破坏实时性。
 
@@ -2071,8 +2134,8 @@ Expected: 无输出。
 - [ ] **Step 3: 提交**
 
 ```bash
-git add src/components/agent/use-agent-events.ts
-git commit -m "feat(agent-ui): SSE 订阅 hook（fetch + Bearer、降速重连、agent_end 回调）"
+git add src/components/agent/use-agent-events.ts src/lib/api.ts
+git commit -m "feat(agent-ui): SSE 订阅 hook（含 Task 4 审查跟进：silent 逃生口与标题 trim）"
 ```
 
 ---
@@ -2869,7 +2932,8 @@ export default function AgentWorkspacePage() {
     const id = selectionRef.current;
     if (id === null) return;
     try {
-      const detail = await fetchAgentConversation(id);
+      // silent=true：失败不弹 toast（每 5s 一拍，抖动连发会刷屏），靠下一拍自愈
+      const detail = await fetchAgentConversation(id, true);
       if (selectionRef.current !== id) return;
       dispatch({ type: "runStatus", runs: detail.runs });
     } catch {
@@ -3310,6 +3374,8 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - `settleRunStatus` 的过期响应竞态（新旧响应乱序 → executing 短暂抹回 false）：无害且自愈（再发会 409 → 自动重同步），登记备查
    - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
    - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
+   - 接口 6（工件列表）只返回 `{ items }`，没有截断标记 —— 右栏手动刷新后，截断提示仍是上次快照的（today 无 UI 依赖这条，登记备查）
+   - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
 
