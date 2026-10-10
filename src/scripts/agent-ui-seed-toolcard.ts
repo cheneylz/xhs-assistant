@@ -25,7 +25,7 @@ const FIXTURES = {
     toolName: "content_note_pack",
     status: "failed",
     errorType: "tool_error",
-    summary: "生成失败：文本模型未配置（人工构造的验收数据）",
+    summary: "生成失败：模型调用超时（人工构造的验收数据）",
   },
 } as const;
 
@@ -38,18 +38,18 @@ async function addFixture(status: FixtureStatus): Promise<void> {
     where: { status: { in: ["succeeded", "failed", "cancelled"] } },
     orderBy: { id: "desc" },
   });
-  if (!run) throw new Error("库里没有已结束的 Run，先在 /agent 里跑一轮任务");
+  if (!run) throw new Error("库里没有已结束的 Run（若刚发过消息，等这一轮跑完再执行本脚本），先在 /agent 里跑一轮任务");
 
   const existing = await prisma.agentToolCall.findFirst({ where: { runId: run.id, toolCallId } });
   if (existing) {
-    console.log(`夹具行已存在（id=${existing.id}），直接刷新页面即可`);
+    console.log(`夹具行已存在（id=${existing.id}，Run #${run.id} / 会话 #${run.conversationId}），直接刷新页面即可`);
     return;
   }
 
   const created = await prisma.agentToolCall.create({
     data: {
       runId: run.id,
-      // 序号排在该 Run 现有卡片的最后，保证出现在时间线末尾
+      // 序号只作审计透传（前端不排序、不展示）；卡片落在时间线末尾靠的是 createdAt 取当前时刻
       stepIndex: await prisma.agentToolCall.count({ where: { runId: run.id } }),
       toolName: fixture.toolName,
       toolCallId,
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const action = process.argv[2];
   if (action === "add") {
     const status = (process.argv[3] ?? "blocked") as FixtureStatus;
-    if (!(status in FIXTURES)) {
+    if (!Object.hasOwn(FIXTURES, status)) {
       throw new Error(`未知状态：${status}（可用：${Object.keys(FIXTURES).join(" / ")}）`);
     }
     return addFixture(status);
@@ -85,6 +85,7 @@ async function main(): Promise<void> {
 main()
   .catch((error) => {
     console.error((error as Error).message);
-    process.exit(1);
+    // 用 exitCode 而不是 process.exit(1)：后者会让下面的 finally（$disconnect）成为死代码
+    process.exitCode = 1;
   })
   .finally(() => prisma.$disconnect());
