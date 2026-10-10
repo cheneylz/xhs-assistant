@@ -36,7 +36,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 5 use-agent-events（SSE + 重连） | ✅ 已验收 | `a4efbd5`（含 Task 4 审查跟进） |
 | Task 5 补丁（质量审查修复） | ✅ 已验收 | `3878c73` |
 | Task 6 conversation-list | ✅ 已验收 | `ea5df90`（跟进项并入 Task 7） |
-| Task 7 message-stream + message-bubble | ⬜ 未开始 | |
+| Task 7 message-stream + message-bubble | 🔶 实现完成，待补丁复审 | `6b33cfb`（含 Task 6 审查跟进） |
+| Task 7 补丁（质量审查修复） | ⬜ 未开始 | |
 | Task 8 tool-call-card + thinking-indicator | ⬜ 未开始 | |
 | Task 9 artifact-panel + artifact-card | ⬜ 未开始 | |
 | Task 10 /agent 页面 + 侧边栏入口 | ⬜ 未开始 | |
@@ -2623,6 +2624,135 @@ git commit -m "feat(agent-ui): 中栏消息流与气泡（含 Task 6 审查跟�
 
 ---
 
+### Task 7 补丁：质量审查修复（独立提交）
+
+**Files:**
+- Modify: `src/components/agent/message-stream.tsx`
+
+**为什么独立提交**：Task 7 已提交（`6b33cfb`）后才出的质量审查结论（2 项 Important 都在滚动行为上，各有自包含的小修法）。
+
+- [ ] **Step 1: 修复两处（一处是组件头部的整段替换，一处是滚动容器那一行）**
+
+**(1) 头部整段替换**（Important 1：切会话后跟随状态不复位 → 新会话停在历史顶部并谎报「有新消息」；Minor 3：`executing` 变化或内容等价的 resync 也会弹提示 —— 用内容指纹只在真的变多时提示）。把 `message-stream.tsx` 里的：
+
+```tsx
+export function MessageStream({ items, executing, truncated, loading }: MessageStreamProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [hasNew, setHasNew] = useState(false);
+
+  const handleScroll = () => {
+    const element = containerRef.current;
+    if (!element) return;
+    const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
+    atBottomRef.current = nearBottom;
+    if (nearBottom) setHasNew(false);
+  };
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    if (atBottomRef.current) {
+      element.scrollTop = element.scrollHeight;
+    } else {
+      setHasNew(true);
+    }
+  }, [items, executing]);
+
+  const scrollToBottom = () => {
+    const element = containerRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+    atBottomRef.current = true;
+    setHasNew(false);
+  };
+```
+
+换成：
+
+```tsx
+export function MessageStream({ items, executing, truncated, loading }: MessageStreamProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  /** 上一次渲染的内容指纹（条数 + 末条 key）：只有内容真的变多才提示「有新消息」 */
+  const contentRef = useRef("");
+  const [hasNew, setHasNew] = useState(false);
+
+  const handleScroll = () => {
+    const element = containerRef.current;
+    if (!element) return;
+    const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
+    atBottomRef.current = nearBottom;
+    if (nearBottom) setHasNew(false);
+  };
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    // 切会话会先清空时间线（agentReducer 的 clear）：把跟随状态一并复位 ——
+    // 否则在旧会话里上滚过的话，新会话会停在历史顶部并谎报「有新消息」
+    // （items 为空只出现在「切会话清空」与「空会话」两种情形，运行中不会出现）
+    if (items.length === 0) {
+      atBottomRef.current = true;
+      contentRef.current = "";
+      setHasNew(false);
+      return;
+    }
+    const fingerprint = `${items.length}:${items[items.length - 1].key}`;
+    const contentChanged = fingerprint !== contentRef.current;
+    contentRef.current = fingerprint;
+    if (atBottomRef.current) {
+      element.scrollTop = element.scrollHeight;
+    } else if (contentChanged) {
+      setHasNew(true);
+    }
+  }, [items, executing]);
+
+  const scrollToBottom = () => {
+    const element = containerRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+    atBottomRef.current = true;
+    setHasNew(false);
+  };
+```
+
+**(2) 滚动容器那一行：加 `onWheel` 同步信号 + 底部内边距 4→12**（Important 2：`atBottomRef` 只由异步的 scroll 事件驱动，用户上滚可能被 effect 读到旧值抹掉；Minor 4：底部留白偏挤）。把：
+
+```tsx
+      <div ref={containerRef} onScroll={handleScroll} style={{ flex: 1, overflowY: "auto", padding: "16px 16px 4px" }}>
+```
+
+换成：
+
+```tsx
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        // 滚轮上滚是**同步**信号：scroll 事件要等浏览器渲染阶段才派发，若一帧恰落在
+        // 「用户已改 scrollTop」与「scroll 事件派发」之间，effect 会读到旧值把上滚抹掉。
+        // 所以不让 atBottomRef 只由异步 scroll 事件驱动（滚回底部仍由 handleScroll 重新开启跟随）。
+        onWheel={(event) => {
+          if (event.deltaY < 0) {
+            atBottomRef.current = false;
+          }
+        }}
+        style={{ flex: 1, overflowY: "auto", padding: "16px 16px 12px" }}
+      >
+```
+
+- [ ] **Step 2: 验证 + 提交**
+
+```bash
+npx tsc --noEmit        # 期望仍只有那两条预期模块缺失（Task 8 未做）
+npx vitest run          # 期望 25 文件 / 290 用例
+
+git add src/components/agent/message-stream.tsx
+git commit -m "fix(agent-ui): 消息流切会话复位跟随状态与上滚同步信号（Task 7 质量审查修复）"
+```
+
+---
+
 ### Task 8: `tool-call-card.tsx` + `thinking-indicator.tsx`
 
 **Files:**
@@ -2955,7 +3085,7 @@ const mainNavItems: MenuProps["items"] = [
  * 【执行中每 5s 兜底校正】见下面的 settleRunStatus —— 覆盖「快照恰落在 agent_end 与
  * finishRun 之间」的毫秒级窗口（该窗口重连补不回结束信号，见 agent-state.ts 文件头）。
  */
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { SendOutlined } from "@ant-design/icons";
 import { Button, Empty, Input, Space, Tag, Typography, message } from "antd";
 
@@ -2978,6 +3108,15 @@ const { Text } = Typography;
 
 /** agent_end 之后延迟多久重同步（等 worker 写完 Run 终态与会话 idle） */
 const RESYNC_AFTER_RUN_END_MS = 800;
+
+/**
+ * memo 包一层（Task 7 质量审查的量化的建议）：SSE 每帧都会产生新的 state 对象 →
+ * 页面每帧重渲染，而约 95% 的帧 `items` 引用完全没变（噪声帧只推进水位）。
+ * 没有这层，每帧都会重建整棵时间线（数百个 antd 组件）—— 一轮 1400 帧是几十万次
+ * 无谓的渲染。四个 props 全是布尔或稳定引用，memo 命中率高。
+ * Task 12 可用 React Profiler 做一次开/关对照实测。
+ */
+const MemoMessageStream = memo(MessageStream);
 
 export default function AgentWorkspacePage() {
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
@@ -3227,7 +3366,7 @@ export default function AgentWorkspacePage() {
           </div>
         ) : (
           <>
-            <MessageStream
+            <MemoMessageStream
               items={state.timeline}
               executing={executing}
               truncated={state.eventsTruncated || state.toolCallsTruncated}
@@ -3552,6 +3691,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 全站列表项都不可键盘访问（`div onClick`，无 `role`/`tabIndex`/`onKeyDown`，与既有页面一致）—— 本组件的会话行同此，登记为全站 a11y 债，建议独立改进项
    - 会话行时间戳不带年份（「10-10 14:23」），跨年时会歧义；组件内 `formatListTime` 与 Task 7-9 内联的时间切片未归口到 `src/lib/time.ts`（可作独立小改进）
    - 工作台三栏统一圆角 10（项目面板级 token 是 12）—— 有意选择，非疏漏
+   - 自动滚动的「用户上滚」信号：滚轮有 `onWheel` 同步标记，**触摸/键盘/滚动条拖动**仍只依赖异步 scroll 事件（窗口极窄，Task 12 可专门手测一次「执行中上滚」）
    - `createAgentConversation` 的 `title` 参数在 P1 没有调用方（页面不传标题）；保留是为对齐服务端契约，已加 trim 守卫（纯空白会 422 弹英文 zod 报文）
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
