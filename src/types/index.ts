@@ -993,3 +993,94 @@ export type AppNotification = {
   read: boolean;
   created_at: string;
 };
+
+// ---------- Agent 工作台（P1-B）----------
+// 形状与 src/app/api/agent/shared.ts 的 Serialized* 一一对应（手工同步 —— 前端不 import
+// 服务端路由层）。字段一律 snake_case（P0 D13）。时间字符串是「朴素上海墙钟」
+// YYYY-MM-DDTHH:mm:ss：字典序即时间序，展示直接切片，不要 new Date() 解析。
+
+export type AgentConversation = {
+  id: number;
+  title: string;
+  status: string; // idle | running | archived
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentMessageItem = {
+  id: number;
+  role: string;
+  content: string;
+  run_id: number | null;
+  tool_call_id: string | null;
+  created_at: string;
+};
+
+export type AgentEventItem = {
+  id: number;
+  run_id: number;
+  type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AgentToolCallItem = {
+  id: number;
+  run_id: number;
+  step_index: number;
+  tool_name: string;
+  tool_call_id: string;
+  params: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  result_truncated: boolean;
+  status: string; // running | succeeded | failed | blocked
+  error_type: string | null;
+  duration_ms: number | null;
+  summary: string;
+  created_at: string;
+};
+
+export type AgentArtifactItem = {
+  event_id: number;
+  run_id: number;
+  kind: string; // draft | topic | image | review | report | script
+  id: number;
+  title: string;
+  href: string;
+  created_at: string;
+};
+
+export type AgentRunItem = {
+  id: number;
+  conversation_id: number;
+  task_id: number;
+  status: string; // pending | running | succeeded | failed | cancelled
+  step_count: number;
+  max_steps: number;
+  tokens_used: number;
+  token_budget: number;
+  error_type: string | null;
+  created_at: string;
+  finished_at: string | null;
+};
+
+/** GET /api/agent/conversations/[id] 的首屏契约（十个字段，P1A 交接 §3.1） */
+export type AgentConversationDetail = {
+  conversation: AgentConversation;
+  messages: AgentMessageItem[];
+  events: AgentEventItem[];
+  tool_calls: AgentToolCallItem[];
+  artifacts: AgentArtifactItem[];
+  latest_event_id: number;
+  runs: AgentRunItem[];
+  events_truncated: boolean;
+  tool_calls_truncated: boolean;
+  artifacts_truncated: boolean;
+};
+
+/** POST /api/agent/conversations/[id]/messages 的响应 */
+export type AgentSendMessageResponse = {
+  conversation: AgentConversation;
+  message: AgentMessageItem;
+  run: AgentRunItem;
+};
