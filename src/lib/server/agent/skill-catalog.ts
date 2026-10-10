@@ -623,7 +623,7 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成脚本");
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
-      // Prisma 会把有限浮点 id 静默截断（12.7 → 12）—— write 级工具不能选错草稿
+      // Prisma 会把有限浮点 id 静默截断（12.7 → 12）—— read 级也不该读错草稿
       if (!Number.isInteger(draftId) || draftId < 1) throw new Error("draft_id 必须是正整数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
       if (!draft) throw new Error("草稿不存在");

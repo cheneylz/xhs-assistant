@@ -14,6 +14,10 @@ describe("agent.md（Agent 系统提示词）", () => {
     expect(prompt).toContain("content_rewrite");
     expect(prompt).toContain("无法撤销");
     expect(prompt).toContain("先说明");
+    // 承重信息是「哪篇」：只断言碎片的话，改成「先说明即可」也能全绿
+    expect(prompt).toContain("哪篇草稿");
+    // 且必须在「工作方式」段内（不是散落在别处的偶然命中）
+    expect(prompt.split("## 可用工具")[0]).toContain("哪篇草稿");
   });
 
   it("保留 {{toolCatalog}} 占位符（渲染器对未提供变量原样保留）", () => {

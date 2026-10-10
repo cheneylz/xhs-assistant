@@ -400,10 +400,10 @@ describe("既有工具的 id 守卫", () => {
 
 describe("目录 ↔ 执行分支不变量", () => {
   it("目录里每个 skillKey 都有自己的执行分支（不落进自定义技能的 LLM 兜底）", async () => {
-    // 未配置模型的上下文：任何实现了 case 的技能要么用自己的错误文案失败、要么正常返回；
-    // 只有「没有 case、掉进 default 兜底」的 key 才会命中下面两句文案之一
+    // 未配置模型的上下文：任何实现了 case 的技能要么抛错（自带文案，或 mock 桩的 TypeError）、要么正常返回；
+    // 只有「没有 case、掉进 default 兜底」的 key 才会命中下面的兜底/未知技能文案
     const catalogKeys = SKILL_CATALOG.map((definition) => definition.skillKey);
-    expect(catalogKeys).toHaveLength(13);
+    expect(catalogKeys.length, "目录数量变化时请同步本用例的不变量遍历").toBe(13);
     for (const skillKey of catalogKeys) {
       let message = "";
       try {
@@ -412,7 +412,7 @@ describe("目录 ↔ 执行分支不变量", () => {
         message = (error as Error).message;
       }
       expect(message, `${skillKey} 缺执行分支（落到 default 的目录守卫）`).not.toContain("已登记在目录却缺少执行分支");
-      expect(message, `${skillKey} 分落进自定义技能兜底`).not.toBe("未配置文本模型，无法执行自定义技能");
+      expect(message, `${skillKey} 疑似落进自定义技能兜底`).not.toBe("未配置文本模型，无法执行自定义技能");
       expect(message, `${skillKey} 疑似未在目录中注册`).not.toContain("未知技能");
     }
   });
