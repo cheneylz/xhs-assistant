@@ -458,4 +458,65 @@ describe("runAgentLoop（循环编排）", () => {
     expect(result.errorType).toBe("char_budget_exceeds_context_window");
     expect(called).toBe(0);
   });
+
+  it("工具名不存在（没走到任何钩子）的调用由事件回填审计行", async () => {
+    // 只注册 hot_refresh：脚本里调 not_exist，Pi 会在 prepareToolCall 阶段直接短路，
+    // 既不进 beforeToolCall 也不进 afterToolCall —— 没有回填就没有任何审计行
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 1 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "not_exist", {}),
+        assistantText("该工具不存在，我换个方式"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    expect(fake.started).toHaveLength(1);
+    expect(fake.started[0]).toMatchObject({
+      toolName: "not_exist",
+      toolCallId: "call-1",
+      status: "failed",
+      errorType: "not_executed",
+      stepIndex: 0,
+    });
+    // 摘要必须非空（B 块靠它渲染卡片；「工具不存在」也比泛泛的「执行失败」有用）
+    expect(fake.started[0]?.summary ?? "").toContain("not found");
+  });
+
+  it("回填不破坏 stepIndex 连续性（短路调用也占一个序号）", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 87 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "not_exist", {}),
+        assistantToolCall("call-2", "hot_refresh", {}),
+        assistantText("完成"),
+      ]),
+    });
+    await runAgentLoop(options);
+
+    // 两次调用各占一个序号：短路调用（无 rowId）由回填写终态，真实调用先写 running、终态走 finalize。
+    // 注意 started 也记录 running 行，因此终态断言要分别落在 started（回填）与 finalized（finalize）上。
+    expect(fake.started.map((row) => row.stepIndex)).toEqual([0, 1]);
+    expect(fake.started[0]).toMatchObject({ status: "failed", errorType: "not_executed" });
+    expect(fake.started[1]).toMatchObject({ stepIndex: 1, status: "running" });
+    expect(fake.finalized).toHaveLength(1);
+    expect(fake.finalized[0]).toMatchObject({ status: "succeeded", summary: "收录 87 条热点" });
+  });
+
+  it("afterToolCall 的兜底落库会回填行 id，不产生重复审计行", async () => {
+    const { fake, options } = baseOptions({
+      tools: [createFakeTool("hot_refresh", { collected: 87 })],
+      fakeStreamFn: createScriptedStreamFn([
+        assistantToolCall("call-1", "hot_refresh", {}),
+        assistantText("完成"),
+      ]),
+    });
+    // 第一次落库（running）失败 → entry.rowId 保持 null → afterToolCall 走兜底分支
+    fake.persistToolCall.mockRejectedValueOnce(new Error("数据库抖动"));
+    await runAgentLoop(options);
+
+    // 一共只该有两次落库尝试：失败的 running + 兜底的终态。
+    // 若兜底没有把行 id 写回条目，事件侧的回填会再补一行（第三次）—— 那就是重复审计行
+    expect(fake.persistToolCall.mock.calls).toHaveLength(2);
+  });
 });

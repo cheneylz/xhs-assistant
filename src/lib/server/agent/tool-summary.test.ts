@@ -47,6 +47,12 @@ describe("buildToolCallSummary（工具卡摘要）", () => {
     expect(buildToolCallSummary({ toolName: "hot_refresh", details: {}, isError: true })).toBe("执行失败（展开可见错误详情）");
   });
 
+  it("事件回填的短路原因优先于通用失败文案（工具名不存在 / 参数校验失败 / 输出截断）", () => {
+    expect(
+      buildToolCallSummary({ toolName: "not_exist", details: {}, isError: true, failureReason: "Tool not_exist not found" }),
+    ).toBe("Tool not_exist not found");
+  });
+
   it("未登记的工具返回空串而不是抛错（fail-soft：摘要不能拖垮循环）", () => {
     expect(buildToolCallSummary({ toolName: "not_exist", details: {}, isError: false })).toBe("");
   });

@@ -235,8 +235,13 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
   let tokensUsed = 0; // 逐轮累加的 usage.totalTokens
   let abortReason: AbortReason | undefined;
   let finalAssistant: AssistantMessage | undefined;
-  // 工具调用起点：toolCallId → { 落库行 id, stepIndex, 起始时刻 }
-  const toolCallRows = new Map<string, { rowId: number | null; stepIndex: number; startedAt: number }>();
+  // 工具调用起点：toolCallId → { 落库行 id, stepIndex, 起始时刻, 入参 }
+  // 由 subscribe 的 tool_execution_start 建立（Pi 保证它在任何钩子之前发出），
+  // 这样「没走到钩子」的调用也能占到自己的序号，step_index 保持 0..n-1 连续。
+  const toolCallRows = new Map<
+    string,
+    { rowId: number | null; stepIndex: number; startedAt: number; params: Record<string, unknown> }
+  >();
 
   /**
    * 落库失败不能影响循环本身：
@@ -287,14 +292,15 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
     // 省略参数类型、交给 AgentOptions 做上下文推断即可，这样连断言都不需要。
     transformContext: async (messages) => pruneByCharBudget(messages, charBudget),
     beforeToolCall: async (context) => {
-      const step = stepIndex;
-      stepIndex += 1;
-      const entry: { rowId: number | null; stepIndex: number; startedAt: number } = {
-        rowId: null,
-        stepIndex: step,
-        startedAt: Date.now(),
-      };
-      toolCallRows.set(context.toolCall.id, entry);
+      // 序号与起始时刻在 tool_execution_start 的观察者里已分配好。
+      // 兜底：真拿不到条目时（不该发生）就地分配一个，宁可序号跳号也不要丢记录。
+      let entry = toolCallRows.get(context.toolCall.id);
+      if (!entry) {
+        entry = { rowId: null, stepIndex, startedAt: Date.now(), params: asRecord(context.args) };
+        stepIndex += 1;
+        toolCallRows.set(context.toolCall.id, entry);
+      }
+      const step = entry.stepIndex;
 
       const verdict = checkToolAllowed(context.toolCall.name);
       if (!verdict.allowed) {
@@ -369,7 +375,9 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             summary,
           });
         } else {
-          await persistToolCallRow({
+          // 行 id 必须写回条目：否则 subscribe 在 tool_execution_end 时会以为「没有落库」
+          // 而再补一行，产生重复审计行
+          const rowId = await persistToolCallRow({
             runId,
             stepIndex: entry?.stepIndex ?? stepIndex,
             toolName: context.toolCall.name,
@@ -381,6 +389,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
             durationMs,
             summary,
           });
+          if (entry) entry.rowId = rowId;
         }
       } catch (error) {
         await notePersistFailure("afterToolCall/toolCall", error);
@@ -438,6 +447,17 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
       console.error("[agent] 事件落库失败", error);
     }
 
+    // 每个工具调用都会先发 tool_execution_start（含被短路的那些），因此在这里分配序号与起始时刻
+    if (record.type === "tool_execution_start") {
+      toolCallRows.set(String(record.toolCallId ?? ""), {
+        rowId: null,
+        stepIndex,
+        startedAt: Date.now(),
+        params: asRecord(record.args),
+      });
+      stepIndex += 1;
+    }
+
     // 逐轮累计 token：usage 只在 message_end 的最终消息上完整
     if (record.type === "message_end") {
       const message = record.message as Partial<AssistantMessage> | undefined;
@@ -449,6 +469,47 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 
     // 连续失败计数（含被阻断的调用：阻断同样是「模型做错了」的信号）
     if (record.type === "tool_execution_end") {
+      // 三类「没走到钩子」的调用（工具名不存在 / 参数校验失败 / 输出被 length 截断）不会在
+      // beforeToolCall / afterToolCall 里落行，前端因此会收到没有卡片、没有摘要的帧。
+      // 用事件载荷补一行 —— 事件里带着 toolCallId / toolName / result / isError，
+      // 缺的只是入参（在 tool_execution_start 时已存进条目）。
+      const backfillId = String(record.toolCallId ?? "");
+      const backfillEntry = toolCallRows.get(backfillId);
+      if (backfillEntry && backfillEntry.rowId === null) {
+        try {
+          const rawResult = asRecord(record.result);
+          const backfillDetails = asRecord(rawResult.details);
+          const backfillIsError = Boolean(record.isError);
+          const backfillErrorText = backfillIsError ? extractMessageText(rawResult.content) : "";
+          const toolName = String(record.toolName ?? "");
+          backfillEntry.rowId = await persistToolCallRow({
+            runId,
+            stepIndex: backfillEntry.stepIndex,
+            toolName,
+            toolCallId: backfillId,
+            params: backfillEntry.params,
+            // 与 afterToolCall 同一处理：失败调用的 details 恒为 {}，错误文本在 content 里，
+            // 不补这一条，卡片展开就是空的
+            result:
+              backfillIsError && backfillErrorText && Object.keys(backfillDetails).length === 0
+                ? { error: backfillErrorText }
+                : backfillDetails,
+            status: backfillIsError ? "failed" : "succeeded",
+            errorType: backfillIsError ? "not_executed" : null,
+            // 短路的调用没有 durationMs：用条目里的起始时刻兜底
+            durationMs: typeof record.durationMs === "number" ? record.durationMs : Date.now() - backfillEntry.startedAt,
+            summary: buildToolCallSummary({
+              toolName,
+              details: backfillDetails,
+              isError: backfillIsError,
+              failureReason: backfillErrorText || null,
+            }),
+          });
+        } catch (error) {
+          await notePersistFailure("subscribe/toolCallBackfill", error);
+        }
+      }
+
       const failure = failureTracker.record(!record.isError);
       if (failure.exceeded && !abortReason) {
         abortReason = "tool_failures";

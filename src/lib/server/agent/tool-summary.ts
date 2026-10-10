@@ -18,11 +18,15 @@ export interface ToolCallSummaryInput {
   isError: boolean;
   /** 仅阻断路径传：guard 返回的 reason */
   blockedReason?: string | null;
+  /** 仅事件回填路径传：短路的可读原因（工具名不存在 / 参数校验失败 / 输出被截断） */
+  failureReason?: string | null;
 }
 
 export function buildToolCallSummary(input: ToolCallSummaryInput): string {
   // guard 正常会给非空 reason；缺省或空串都走兜底：摘要是对外文案，不能出现空卡片
   if (input.blockedReason != null) return input.blockedReason || BLOCKED_FALLBACK;
+  // 短路原因比通用失败文案有用，优先返回（两者都非空时取前者）
+  if (input.failureReason) return input.failureReason;
   if (input.isError) return FAILED_SUMMARY;
 
   const definition = findSkillDefinition(input.toolName);
