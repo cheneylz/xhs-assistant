@@ -889,7 +889,7 @@ describe("同秒同 rank 的兜底排序（id 升序）", () => {
 
 - [ ] **Step 1: 更新测试文件的 import，并追加失败测试（`agent-state.test.ts`）**
 
-先把文件顶部的 import 列表改成（新增 `applyEventFrame`、`agentReducer`、服务端 `Serialized*` 类型）：
+先把文件顶部的 import 列表改成（新增 `applyEventFrame`、服务端 `Serialized*` 类型）：
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -1149,7 +1149,7 @@ describe("applyEventFrame（SSE 增量归并）", () => {
 npx vitest run src/lib/agent/agent-state.test.ts
 ```
 
-Expected: FAIL —— `applyEventFrame is not a function`（且 `agentReducer` 未导出，Task 3 才实现；**本次运行允许这两类失败，其余用例必须通过**）。
+Expected: FAIL —— 13 个新的帧归并用例全是 `applyEventFrame is not a function`；Task 1 的 13 个 + 排序补测 + 契约镜像共 15 个应通过。
 
 - [ ] **Step 3: 实现（`src/lib/agent/agent-state.ts` 末尾追加）**
 
