@@ -108,11 +108,9 @@ export function extractArtifacts(toolName: string, output: Record<string, unknow
   const rawIds = output[spec.idField];
   // 标题字段两种形状：数组（多产出，按索引对应）与字符串（单产出，如改写后的草稿标题）
   const rawTitles = spec.titleField ? output[spec.titleField] : undefined;
-  const titles: string[] = Array.isArray(rawTitles)
-    ? (rawTitles as string[])
-    : typeof rawTitles === "string" && rawTitles
-      ? [rawTitles]
-      : [];
+  let titles: string[] = [];
+  if (Array.isArray(rawTitles)) titles = rawTitles as string[];
+  else if (typeof rawTitles === "string" && rawTitles.trim()) titles = [rawTitles];
 
   // 多产出（如选题批量生成）：idField 是数组，标题按索引对应
   if (Array.isArray(rawIds)) {

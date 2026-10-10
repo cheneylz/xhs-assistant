@@ -85,6 +85,27 @@ describe("TOOL_SCHEMAS（工具入参 schema）", () => {
     expect(Value.Check(schema, { limit: 21 })).toBe(false);
     expect(Value.Check(schema, { limit: 0 })).toBe(false);
   });
+
+  it("count / limit 的 default 与路由侧默认值一致，且全部属性都有 description（模型靠它选参数）", () => {
+    type JsonSchemaNode = { properties?: Record<string, { default?: unknown; description?: string }> };
+    const defaults: Array<[string, string, unknown]> = [
+      ["content_titles", "count", 5],
+      ["content_tags", "count", 8],
+      ["analytics_reports", "limit", 5],
+      ["library_search_notes", "limit", 10],
+      ["library_note_detail", "comment_limit", 20],
+    ];
+    for (const [skillKey, field, expected] of defaults) {
+      const schema = getToolSchema(skillKey) as unknown as JsonSchemaNode;
+      expect(schema.properties?.[field]?.default, `${skillKey}.${field}.default`).toBe(expected);
+    }
+    for (const item of SKILL_CATALOG) {
+      const schema = getToolSchema(item.skillKey) as unknown as JsonSchemaNode;
+      for (const [field, node] of Object.entries(schema.properties ?? {})) {
+        expect(node.description, `${item.skillKey}.${field} 缺 description`).toBeTruthy();
+      }
+    }
+  });
 });
 
 describe("assertToolNamesProviderSafe（工具名合法性）", () => {

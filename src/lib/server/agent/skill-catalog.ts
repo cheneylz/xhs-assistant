@@ -23,7 +23,7 @@ export interface ArtifactSpec {
   kind: ArtifactKind;
   /** 产出物 id 所在字段名；该字段是数组时表示一次产出多个工件 */
   idField: string;
-  /** 标题字段名（数组产出按索引对应；单产出取首项） */
+  /** 标题字段名（数组 = 多产出按索引对应；字符串 = 单产出取该值）；缺省或取不到时回退「技能名 #id」 */
   titleField?: string;
   /** 跳转链接前缀，拼接 id 得到 href */
   hrefPrefix: string;
@@ -288,7 +288,13 @@ description: 对指定草稿正文做去 AI 味改写并直接覆盖原文
     summarize: (details) => {
       const draftId = summarizeCount(details.draft_id);
       const title = typeof details.title === "string" && details.title ? `：《${details.title}》` : "";
-      return `已改写草稿 #${draftId}${title}（${summarizeCount(details.length)} 字）`;
+      const length = summarizeCount(details.length);
+      // 0 字 = 模型返回空内容、原文未改动（executeSkill 里已拦截，绝不覆盖正文）—— 必须带出 reason
+      if (length === 0) {
+        const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
+        return `未改动草稿 #${draftId}${title}${reason}`;
+      }
+      return `已改写草稿 #${draftId}${title}（${length} 字）`;
     },
   },
   {
@@ -325,10 +331,11 @@ description: 为给定文案生成多个小红书风格标题备选
     // 实证：generateTitles 纯返回 string[]，无任何 prisma 产品数据写入
     riskLevel: "read",
     summarize: (details) => {
-      const count = summarizeCount(details.titles);
-      if (count > 0) {
-        const first = String((details.titles as unknown[])[0] ?? "");
-        return `生成 ${count} 个标题${first ? `：《${first}》` : ""}`;
+      // 摘要永不空行：非数组一律按「无产出」处理（summarizeCount 会把数字字符串转成数字，不能用来判数组）
+      const titles = Array.isArray(details.titles) ? details.titles : [];
+      if (titles.length > 0) {
+        const first = String(titles[0] ?? "");
+        return `生成 ${titles.length} 个标题${first ? `：《${first}》` : ""}`;
       }
       const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
       return `生成 0 个标题${reason}`;
@@ -368,10 +375,11 @@ description: 为给定文案生成小红书话题标签
     // 实证：generateTags 纯返回 string[]，无任何 prisma 产品数据写入
     riskLevel: "read",
     summarize: (details) => {
-      const count = summarizeCount(details.tags);
-      if (count > 0) {
-        const preview = (details.tags as unknown[]).slice(0, 3).map((tag) => `#${String(tag)}`).join(" ");
-        return `生成 ${count} 个标签：${preview}`;
+      // 同 content_titles：非数组按无产出处理（直接 .slice 会在非数组上抛错 → 摘要变空行）
+      const tags = Array.isArray(details.tags) ? details.tags : [];
+      if (tags.length > 0) {
+        const preview = tags.slice(0, 3).map((tag) => `#${String(tag)}`).join(" ");
+        return `生成 ${tags.length} 个标签：${preview}`;
       }
       const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
       return `生成 0 个标签${reason}`;
@@ -428,12 +436,14 @@ description: 读取账号知识库（定位、口吻风格、可信主张、内�
 ## 输出
 
 返回知识库上下文本（context）与字数（length）。`,
-    // 实证：buildKbContext 只读知识库与样本，无写入
+    // 实证：buildKbContext 只读；仅在知识库无行时创建一条空知识库（幂等、replay 安全，无用户可见数据变更）
     riskLevel: "read",
     summarize: (details) => {
       const length = summarizeCount(details.length);
+      // 契约同 hot_refresh：reason 只在 0 字时带出（有产出不带）
+      if (length > 0) return `读取知识库上下文（${length} 字）`;
       const reason = typeof details.reason === "string" && details.reason ? `，${details.reason}` : "";
-      return `读取知识库上下文（${length} 字${reason}）`;
+      return `读取知识库上下文（0 字${reason}）`;
     },
   },
   {
@@ -470,7 +480,12 @@ description: 按关键词或标签检索内容库里的笔记
     riskLevel: "read",
     summarize: (details) => {
       const total = summarizeCount(details.total);
-      if (total > 0) return `检索到 ${total} 篇笔记`;
+      if (total > 0) {
+        // 命中数大于实际返回条数时标出截断（模型只见得到返回的那批）
+        const count = summarizeCount(details.count);
+        const truncated = count > 0 && total > count ? `（返回 ${count} 条）` : "";
+        return `检索到 ${total} 篇笔记${truncated}`;
+      }
       const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
       return `检索到 0 篇笔记${reason}`;
     },
@@ -528,6 +543,17 @@ export interface SkillContext {
   modelConfig: ModelConfigLike | null;
   apiKey: string;
 }
+
+/** C 块过渡期护栏：目录已登记但执行分支未实现的 skillKey（Task 7 落完最后一个分支后整块删除） */
+const INTERIM_UNIMPLEMENTED_SKILLS = new Set([
+  "content_rewrite",
+  "content_titles",
+  "content_tags",
+  "analytics_reports",
+  "kb_get",
+  "library_search_notes",
+  "library_note_detail",
+]);
 
 /** 执行单个技能（映射到现有服务函数） */
 export async function executeSkill(skillKey: string, params: Record<string, unknown>, context: SkillContext): Promise<Record<string, unknown>> {
@@ -623,6 +649,10 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       return { slots: result.slots, reason: result.reason };
     }
     default: {
+      // 过渡期护栏：注册表种子（ensureUserSkills）会让这些 key 落进 LLM 兜底、产出假结果 —— 宁可响亮失败
+      if (INTERIM_UNIMPLEMENTED_SKILLS.has(skillKey)) {
+        throw new Error(`技能 ${skillKey} 的执行分支尚未实现（C 块过渡期，请勿使用运行中的 worker 验收）`);
+      }
       // 自定义技能：以注册表维护的 instructions（SKILL.md 风格）作为 system prompt，由 LLM 驱动执行
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法执行自定义技能");
       const custom = await prisma.skillRegistry.findFirst({ where: { userId, skillKey, enabled: true } });

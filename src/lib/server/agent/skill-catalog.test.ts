@@ -209,4 +209,35 @@ describe("SKILL_CATALOG（技能目录）", () => {
       "笔记 #5《露营装备清单》，暂无评论",
     );
   });
+
+  it("摘要对畸形 details 不抛错、不产出空文案（D21：工具卡不能没有摘要行）", () => {
+    const titles = findSkillDefinition("content_titles");
+    const tags = findSkillDefinition("content_tags");
+    const detail = findSkillDefinition("library_note_detail");
+    if (!titles || !tags || !detail) throw new Error("工具不在目录里");
+    // summarizeCount 会把数字字符串当数字：不能用它判「是不是数组」
+    expect(titles.summarize({ titles: "3" })).toBe("生成 0 个标题");
+    expect(tags.summarize({ tags: 5 })).toBe("生成 0 个标签");
+    expect(detail.summarize({ note_id: 5, note_title: 123, comment_total: "x" })).toBe("笔记 #5，暂无评论");
+  });
+
+  it("content_rewrite 空产出（原文未改动）的摘要带出 reason", () => {
+    const tool = findSkillDefinition("content_rewrite");
+    if (!tool) throw new Error("content_rewrite 不在目录里");
+    expect(
+      tool.summarize({ draft_id: 12, title: "露营装备清单", length: 0, reason: "模型返回空内容，原文未改动" }),
+    ).toBe("未改动草稿 #12：《露营装备清单》（模型返回空内容，原文未改动）");
+  });
+
+  it("library_search_notes 结果被截断时摘要标出实际返回条数", () => {
+    const search = findSkillDefinition("library_search_notes");
+    if (!search) throw new Error("library_search_notes 不在目录里");
+    expect(search.summarize({ total: 30, count: 20, items: [] })).toBe("检索到 30 篇笔记（返回 20 条）");
+  });
+
+  it("kb_get 只在 0 字时带出 reason（有产出不带，与 hot_refresh 同契约）", () => {
+    const kb = findSkillDefinition("kb_get");
+    if (!kb) throw new Error("kb_get 不在目录里");
+    expect(kb.summarize({ context: "x", length: 1, reason: "不该出现" })).toBe("读取知识库上下文（1 字）");
+  });
 });
