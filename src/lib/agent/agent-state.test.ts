@@ -17,10 +17,13 @@ import type {
   AgentToolCallItem,
 } from "@/types";
 import {
+  agentReducer,
+  applyArtifacts,
   applyEventFrame,
   applyFirstScreen,
   createInitialState,
   isActiveRunStatus,
+  parseSseBuffer,
   toolCardKey,
   upsertConversation,
 } from "./agent-state";
@@ -428,10 +431,14 @@ describe("applyEventFrame（SSE 增量归并）", () => {
     });
   });
 
-  it("tool_execution_end 更新既有卡：状态、摘要、耗时；并吞掉 result.details", () => {
+  it("tool_execution_end 更新既有卡：状态、摘要、耗时；不吞掉 start 的数据，也不改旧状态", () => {
     const started = applyEventFrame(
       buildToolCardState(),
-      buildFrame({ id: 60, type: "tool_execution_start", payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} } }),
+      buildFrame({
+        id: 60,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: { limit: 50 } },
+      }),
     );
     const ended = applyEventFrame(
       started,
@@ -450,7 +457,40 @@ describe("applyEventFrame（SSE 增量归并）", () => {
     );
     expect(ended.timeline).toHaveLength(1);
     expect(ended.timeline[0]).toMatchObject({
-      tool: { status: "succeeded", summary: "收录 12 条热点", durationMs: 2100, result: { collected: 12 } },
+      tool: {
+        status: "succeeded",
+        summary: "收录 12 条热点",
+        durationMs: 2100,
+        result: { collected: 12 },
+        // 补丁里没带的字段必须原样保留（「缺省=不动」）：
+        params: { limit: 50 },
+        stepIndex: null,
+      },
+    });
+    // 不可变性：上一版状态的卡片原封不动（copy-on-write 是身份归并的前提）
+    expect(started.timeline[0]).toMatchObject({ tool: { status: "running", summary: "" } });
+    expect(ended.timeline[0]).not.toBe(started.timeline[0]);
+  });
+
+  it("end 帧的摘要/耗时/结果是必写字段：非法摘要归一成空串、缺失耗时归一成 null", () => {
+    const started = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({
+        id: 60,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} },
+      }),
+    );
+    const ended = applyEventFrame(
+      started,
+      buildFrame({
+        id: 61,
+        type: "tool_execution_end",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", result: {}, isError: false, summary: 123 },
+      }),
+    );
+    expect(ended.timeline[0]).toMatchObject({
+      tool: { status: "succeeded", summary: "", durationMs: null, result: null },
     });
   });
 
@@ -531,5 +571,112 @@ describe("applyEventFrame（SSE 增量归并）", () => {
     const tools = state.timeline.filter((item) => item.kind === "tool");
     expect(tools).toHaveLength(2);
     expect(tools.map((item) => item.key)).toEqual(["1:call_1", "2:call_1"]);
+  });
+});
+
+describe("parseSseBuffer（SSE 缓冲解析，与 crawlXhsDataStream 同范式）", () => {
+  it("拆出完整帧，半帧留在 rest", () => {
+    const buffer = 'data: {"id":1,"run_id":1,"type":"status","payload":{"message":"a"},"created_at":"t"}\n\ndata: {"id":2,';
+    const { frames, rest } = parseSseBuffer(buffer);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ id: 1, type: "status" });
+    expect(rest).toBe('data: {"id":2,');
+  });
+
+  it("心跳与坏帧被跳过，不影响后续帧", () => {
+    const buffer =
+      ': ping\n\ndata: {bad json}\n\ndata: {"id":3,"run_id":1,"type":"agent_end","payload":{},"created_at":"t"}\n\n';
+    const { frames, rest } = parseSseBuffer(buffer);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(3);
+    expect(rest).toBe("");
+  });
+
+  it("缺少 id / type 的对象不算帧", () => {
+    const buffer = 'data: {"type":"status"}\n\ndata: null\n\n';
+    expect(parseSseBuffer(buffer).frames).toEqual([]);
+  });
+});
+
+describe("applyArtifacts / agentReducer（右栏刷新与 action 包装）", () => {
+  it("右栏单独刷新：整体替换工件列表", () => {
+    const state = applyArtifacts(applyFirstScreen(createInitialState(), buildDetail({ artifacts: [buildArtifact()] })), [
+      buildArtifact({ event_id: 99, id: 8, title: "《新草稿》" }),
+    ]);
+    expect(state.artifacts).toEqual([buildArtifact({ event_id: 99, id: 8, title: "《新草稿》" })]);
+  });
+
+  it("runCreated：用户消息上屏、会话更新、进入执行中（可取消的是新 Run）", () => {
+    const state = agentReducer(createInitialState(), {
+      type: "runCreated",
+      conversation: buildDetail().conversation,
+      message: buildUserMessage(),
+      run: buildRun({ id: 9, status: "pending" }),
+    });
+    expect(state.timeline).toEqual([
+      { kind: "user", key: "m:1", created_at: "2026-10-10T10:00:01", content: "帮我出选题" },
+    ]);
+    expect(state.runStatus).toEqual({ executing: true, pendingRunIds: [9] });
+  });
+
+  it("runCreated 重复应用不会插入两条相同的用户消息（按 message id 幂等）", () => {
+    const action = {
+      type: "runCreated" as const,
+      conversation: buildDetail().conversation,
+      message: buildUserMessage(),
+      run: buildRun({ id: 9, status: "pending" }),
+    };
+    const state = agentReducer(agentReducer(createInitialState(), action), action);
+    expect(state.timeline).toHaveLength(1);
+  });
+
+  it("runCancelled：回到空闲", () => {
+    const executing = agentReducer(createInitialState(), {
+      type: "runCreated",
+      conversation: buildDetail().conversation,
+      message: buildUserMessage(),
+      run: buildRun({ id: 9, status: "pending" }),
+    });
+    expect(agentReducer(executing, { type: "runCancelled" }).runStatus).toEqual({
+      executing: false,
+      pendingRunIds: [],
+    });
+  });
+
+  it("clear：切会话时回到初始态（不残留上一个会话的工件与时间线）", () => {
+    const dirty = applyFirstScreen(
+      createInitialState(),
+      buildDetail({ events: [buildEvent()], artifacts: [buildArtifact()], latest_event_id: 9 }),
+    );
+    expect(agentReducer(dirty, { type: "clear" })).toEqual(createInitialState());
+  });
+
+  it("runStatus 动作：只按 runs 校正执行状态，不动时间线 / 水位 / 工件（页面兜底重同步用）", () => {
+    const state = applyFirstScreen(
+      createInitialState(),
+      buildDetail({
+        events: [buildEvent({ id: 30 })],
+        latest_event_id: 50,
+        runs: [buildRun({ id: 1, status: "running" })],
+      }),
+    );
+    expect(state.runStatus.executing).toBe(true);
+    // 服务端说这个 Run 已经结束了（worker 补写完终态）——只校正执行状态
+    const settled = agentReducer(state, { type: "runStatus", runs: [buildRun({ id: 1, status: "succeeded" })] });
+    expect(settled.runStatus).toEqual({ executing: false, pendingRunIds: [] });
+    expect(settled.timeline).toEqual(state.timeline);
+    expect(settled.lastEventId).toBe(50);
+    expect(settled.artifacts).toEqual(state.artifacts);
+  });
+
+  it("snapshot / frame 走对应的纯函数", () => {
+    const withSnapshot = agentReducer(createInitialState(), {
+      type: "snapshot",
+      detail: buildDetail({ events: [buildEvent()], latest_event_id: 50 }),
+    });
+    expect(withSnapshot.timeline).toHaveLength(1);
+    const withFrame = agentReducer(withSnapshot, { type: "frame", frame: buildFrame({ id: 51 }) });
+    expect(withFrame.timeline).toHaveLength(2);
+    expect(withFrame.lastEventId).toBe(51);
   });
 });

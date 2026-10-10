@@ -16,6 +16,15 @@
  * 【快照替换后必须重连 SSE】applyFirstScreen 把水位回退到快照的 latest_event_id
  * （不是取 max —— 快照在途期间连接推的更新帧会被替换丢掉，只能靠「从快照水位重放」补）。
  * 所以调用方在应用快照后必须立刻重连（页面的 resync 会把 streamKey +1）。
+ *
+ * 【快照可能错过 agent_end —— 由页面的兜底校正收敛】身份幂等只覆盖「连接存活期间」的帧；
+ * 还有一类跨边界的窗口救不回来：快照水位取 latest_event_id，它计入所有事件类型，而 worker
+ * 先落 agent_end、后写 Run 终态（finishRun）—— 若快照恰在这个毫秒级窗口返回，会出现
+ * 「executing=true 且水位已越过 agent_end」，重连也补不回结束信号。页面在执行中每 5s
+ * 用 runStatus 动作按服务端 runs 校正一次（见 page.tsx 的 settleRunStatus），窗口由此收敛。
+ *
+ * 【旧帧按到达顺序追加】id ≤ 水位的旧帧若内容不在快照里仍会被归并，但它追加在时间线**末尾**
+ * 而不是插回 created_at 位置 —— 实际只影响「重连后补到的边角旧帧」，它们本就贴近时间线末端。
  */
 import type {
   AgentArtifactItem,
@@ -227,16 +236,21 @@ function buildTimeline(detail: AgentConversationDetail): AgentTimelineItem[] {
   return sortables.flatMap((entry) => (entry.item === null ? [] : [entry.item]));
 }
 
+/** 由 Run 列表推导执行状态（applyFirstScreen 与 runStatus 动作共用，避免两处各写一份） */
+export function runStatusFromRuns(runs: AgentRunItem[]): AgentRunStatusView {
+  return {
+    executing: runs.some((run) => isActiveRunStatus(run.status)),
+    pendingRunIds: runs.filter((run) => run.status === "pending").map((run) => run.id),
+  };
+}
+
 /** 首屏 / 重同步：服务端快照是权威，整体替换（含水位与截断标记） */
 export function applyFirstScreen(state: AgentUiState, detail: AgentConversationDetail): AgentUiState {
   return {
     conversation: detail.conversation,
     timeline: buildTimeline(detail),
     artifacts: detail.artifacts,
-    runStatus: {
-      executing: detail.runs.some((run) => isActiveRunStatus(run.status)),
-      pendingRunIds: detail.runs.filter((run) => run.status === "pending").map((run) => run.id),
-    },
+    runStatus: runStatusFromRuns(detail.runs),
     // 有意回退（不是 Math.max）：见文件头「快照替换后必须重连 SSE」
     lastEventId: detail.latest_event_id,
     eventsTruncated: detail.events_truncated,
@@ -370,6 +384,10 @@ export function applyEventFrame(state: AgentUiState, frame: AgentEventItem): Age
     const details = toRecord(toRecord(frame.payload.result).details);
     return upsertToolCard(base, frame, toolCallId, {
       toolName,
+      // 帧里没有 status / error_type（服务端只在 agent_tool_calls 里落，SSE 出口只补 summary）：
+      // 被护栏阻断的调用在直播期间会先显示为「失败」（摘要仍含「已阻断」字样），
+      // 首屏 / 重同步换成 DTO 后才是「被阻断」+ 错误类型。同类差异：失败调用的展开详情
+      // （错误文本）也只有 DTO 里有 —— 两处都由重同步收敛，登记在交接文档。
       status: frame.payload.isError === true ? "failed" : "succeeded",
       summary: typeof frame.payload.summary === "string" ? frame.payload.summary : "",
       durationMs: typeof frame.payload.durationMs === "number" ? frame.payload.durationMs : null,
@@ -389,4 +407,87 @@ export function applyEventFrame(state: AgentUiState, frame: AgentEventItem): Age
 
   // 其余（message_start / message_update / 未来新增类型）是噪声或不由本 reducer 承担
   return base;
+}
+
+/**
+ * 解析 SSE 缓冲：返回完整帧与剩余半帧（与 lib/api.ts 的 crawlXhsDataStream 同范式）。
+ * 服务端帧格式 `data: <json>\n\n`；心跳是 `: ping\n\n`（以冒号开头，天然不匹配 data: 前缀）。
+ * 坏帧跳过：单帧损坏（截断 / 非法 JSON）不应中断整条流。
+ */
+export function parseSseBuffer(buffer: string): { frames: AgentEventItem[]; rest: string } {
+  const lines = buffer.split("\n");
+  const rest = lines.pop() ?? "";
+  const frames: AgentEventItem[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) continue;
+    try {
+      const parsed: unknown = JSON.parse(line.slice(6));
+      if (isAgentEventItem(parsed)) frames.push(parsed);
+    } catch {
+      // 坏帧跳过
+    }
+  }
+  return { frames, rest };
+}
+
+function isAgentEventItem(value: unknown): value is AgentEventItem {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as { id?: unknown; type?: unknown };
+  return typeof candidate.id === "number" && typeof candidate.type === "string";
+}
+
+/** 右栏单独刷新（接口 6 /artifacts）的结果：整体替换工件列表 */
+export function applyArtifacts(state: AgentUiState, items: AgentArtifactItem[]): AgentUiState {
+  return { ...state, artifacts: items };
+}
+
+/** 页面的 action 联合：都只是把纯函数接到 React 的 useReducer 上 */
+export type AgentAction =
+  | { type: "snapshot"; detail: AgentConversationDetail }
+  | { type: "frame"; frame: AgentEventItem }
+  | { type: "artifacts"; items: AgentArtifactItem[] }
+  | { type: "runCreated"; conversation: AgentConversation; message: AgentMessageItem; run: AgentRunItem }
+  | { type: "runCancelled" }
+  | { type: "runStatus"; runs: AgentRunItem[] }
+  | { type: "clear" };
+
+export function agentReducer(state: AgentUiState, action: AgentAction): AgentUiState {
+  switch (action.type) {
+    case "snapshot":
+      return applyFirstScreen(state, action.detail);
+    case "frame":
+      return applyEventFrame(state, action.frame);
+    case "artifacts":
+      return applyArtifacts(state, action.items);
+    case "runCreated": {
+      // 用户消息立刻上屏（POST 响应就是权威数据，不做乐观插入）；过程随后由 SSE 接管
+      const item: AgentTimelineItem = {
+        kind: "user",
+        key: messageKey(action.message.id),
+        created_at: action.message.created_at,
+        content: action.message.content,
+      };
+      const timeline = state.timeline.some((entry) => entry.key === item.key)
+        ? state.timeline
+        : [...state.timeline, item];
+      return {
+        ...state,
+        conversation: action.conversation,
+        timeline,
+        runStatus: { executing: true, pendingRunIds: [action.run.id] },
+      };
+    }
+    case "runCancelled":
+      // P1 一次只允许一个活跃 Run（服务端有 409 兜底）：取消成功即回空闲
+      return { ...state, runStatus: { executing: false, pendingRunIds: [] } };
+    case "runStatus":
+      // 兜底校正（页面在执行中定时调用）：只按服务端最新 runs 校正执行状态 ——
+      // 不动时间线 / 水位 / 工件，因此不需要重连 SSE（动机见 page.tsx 的 settleRunStatus）
+      return { ...state, runStatus: runStatusFromRuns(action.runs) };
+    case "clear":
+      // 切会话：清空上一个会话的时间线/工件，避免加载期间显示串台数据
+      return createInitialState();
+    default:
+      return state;
+  }
 }
