@@ -42,7 +42,7 @@ vi.mock("../core/db", () => ({
   },
 }));
 
-import { executeSkill, type SkillContext } from "./skill-catalog";
+import { SKILL_CATALOG, executeSkill, type SkillContext } from "./skill-catalog";
 
 /** 造一个只有必要字段的上下文（textClient 由各用例按需注入） */
 function makeContext(overrides: Partial<SkillContext> = {}): SkillContext {
@@ -384,5 +384,36 @@ describe("kb_get", () => {
     expect(result.length).toBe(0);
     expect(result.context).toBe("");
     expect(result.reason).toBe("知识库尚未配置，可先在「设置 → 账号知识库」填写账号定位与口吻");
+  });
+});
+
+describe("既有工具的 id 守卫", () => {
+  it("review_submit / script_generate 的浮点 draft_id 被先行拦截", async () => {
+    await expect(executeSkill("review_submit", { draft_id: 12.7 }, makeModelContext({}))).rejects.toThrow(
+      "draft_id 必须是正整数",
+    );
+    await expect(executeSkill("script_generate", { draft_id: 12.7 }, makeModelContext({}))).rejects.toThrow(
+      "draft_id 必须是正整数",
+    );
+  });
+});
+
+describe("目录 ↔ 执行分支不变量", () => {
+  it("目录里每个 skillKey 都有自己的执行分支（不落进自定义技能的 LLM 兜底）", async () => {
+    // 未配置模型的上下文：任何实现了 case 的技能要么用自己的错误文案失败、要么正常返回；
+    // 只有「没有 case、掉进 default 兜底」的 key 才会命中下面两句文案之一
+    const catalogKeys = SKILL_CATALOG.map((definition) => definition.skillKey);
+    expect(catalogKeys).toHaveLength(13);
+    for (const skillKey of catalogKeys) {
+      let message = "";
+      try {
+        await executeSkill(skillKey, {}, makeContext());
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message, `${skillKey} 缺执行分支（落到 default 的目录守卫）`).not.toContain("已登记在目录却缺少执行分支");
+      expect(message, `${skillKey} 分落进自定义技能兜底`).not.toBe("未配置文本模型，无法执行自定义技能");
+      expect(message, `${skillKey} 疑似未在目录中注册`).not.toContain("未知技能");
+    }
   });
 });

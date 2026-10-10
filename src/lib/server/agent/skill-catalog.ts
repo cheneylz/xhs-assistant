@@ -604,6 +604,8 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
     case "review_submit": {
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
+      // Prisma 会把有限浮点 id 静默截断（12.7 → 12）—— write 级工具不能选错草稿
+      if (!Number.isInteger(draftId) || draftId < 1) throw new Error("draft_id 必须是正整数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
       if (!draft) throw new Error("草稿不存在");
       const { job } = await createReviewJob({
@@ -621,6 +623,8 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法生成脚本");
       const draftId = Number(params.draft_id);
       if (!draftId) throw new Error("缺少草稿（draft_id）参数");
+      // Prisma 会把有限浮点 id 静默截断（12.7 → 12）—— write 级工具不能选错草稿
+      if (!Number.isInteger(draftId) || draftId < 1) throw new Error("draft_id 必须是正整数");
       const draft = await prisma.aiDraft.findFirst({ where: { id: draftId, userId } });
       if (!draft) throw new Error("草稿不存在");
       const script = await textClient.generateVideoScript({
@@ -777,6 +781,10 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
       return { context, length: context.length };
     }
     default: {
+      // 目录里已登记的 skillKey 不该落到这里（说明缺执行分支）：注册表种子会让它静默走 LLM 兜底产出假结果
+      if (findSkillDefinition(skillKey)) {
+        throw new Error(`技能 ${skillKey} 已登记在目录却缺少执行分支（内部错误，请检查 skill-catalog）`);
+      }
       // 自定义技能：以注册表维护的 instructions（SKILL.md 风格）作为 system prompt，由 LLM 驱动执行
       if (!modelConfig || !apiKey) throw new Error("未配置文本模型，无法执行自定义技能");
       const custom = await prisma.skillRegistry.findFirst({ where: { userId, skillKey, enabled: true } });
