@@ -7,6 +7,7 @@
  * 用户消息保持纯文本 —— 用户输入里的 `#` / `*` 不该被当语法解析。
  * 样式在 globals.css 的 `.agent-markdown`（项目既有的全局样式落点）。
  */
+import { memo } from "react";
 import { Typography } from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -19,7 +20,12 @@ interface MessageBubbleProps {
   created_at: string;
 }
 
-export function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
+/**
+ * memo：时间线每次变化都会重渲染整棵 MessageStream，而助手气泡要跑一遍
+ * micromark→hast→React 元素（比纯文本重两个数量级）—— props 是三个原始值，
+ * memo 可让未变更的气泡跳过解析（与 ToolCallCard / ArtifactPanel 同一取舍）。
+ */
+export const MessageBubble = memo(function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
   const isUser = role === "user";
   return (
     <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: 12 }}>
@@ -53,4 +59,4 @@ export function MessageBubble({ role, text, created_at }: MessageBubbleProps) {
       </div>
     </div>
   );
-}
+});

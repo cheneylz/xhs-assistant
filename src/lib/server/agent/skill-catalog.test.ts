@@ -118,5 +118,7 @@ describe("SKILL_CATALOG（技能目录）", () => {
     expect(hotRefresh.summarize({ collected: 0, reason: "无种子关键词，请先配置关键词组" })).toBe(
       "收录 0 条热点（无种子关键词，请先配置关键词组）",
     );
+    // 契约：reason 解释「为什么是 0」，有产出时不带出来
+    expect(hotRefresh.summarize({ collected: 5, reason: "无种子关键词" })).toBe("收录 5 条热点");
   });
 });

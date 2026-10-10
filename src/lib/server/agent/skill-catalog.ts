@@ -97,7 +97,7 @@ description: 采集全站热点榜单，计算热度分并生成 TOP50 快照
       if (collected > 0) return `收录 ${collected} 条热点`;
       // 0 条时把原因带出来：否则用户无法区分「没配关键词组」与「采集失败」（验收发现）
       const reason = typeof details.reason === "string" && details.reason ? `（${details.reason}）` : "";
-      return `收录 0 条热点${reason}`;
+      return `收录 ${collected} 条热点${reason}`;
     },
   },
   {

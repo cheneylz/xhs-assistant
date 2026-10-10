@@ -161,6 +161,8 @@ body {
 }
 .agent-markdown table {
   border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
   margin: 6px 0;
   width: 100%;
   font-size: 12px;
