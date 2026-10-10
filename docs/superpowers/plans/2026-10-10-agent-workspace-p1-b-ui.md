@@ -1307,6 +1307,97 @@ git commit -m "feat(agent-ui): SSE 事件帧身份幂等归并（含 Task 1 审�
 - Modify: `src/lib/agent/agent-state.ts`（文件末尾追加）
 - Test: `src/lib/agent/agent-state.test.ts`（追加 describe）
 
+- [ ] **Step 0: 先落地 Task 2 质量审查的 3 项跟进（与 Task 3 同一次提交）**
+
+来自 Task 2 的代码质量审查（结论 Yes）。核心目的是把本模块赖以成立的两条性质用断言钉死，并记下直播与首屏的一处已知差异。
+
+**(a)+(b) 加强「end 帧更新既有卡」用例**：原用例的 start 帧传 `args: {}`，导致「end 补丁不会清掉 start 的数据」这条性质没被断言；同时补一条不可变性断言（copy-on-write 是整个身份归并设计的前提）。把测试文件里 `tool_execution_end 更新既有卡：状态、摘要、耗时；并吞掉 result.details` 这条用例整体替换为：
+
+```ts
+  it("tool_execution_end 更新既有卡：状态、摘要、耗时；不吞掉 start 的数据，也不改旧状态", () => {
+    const started = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({
+        id: 60,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: { limit: 50 } },
+      }),
+    );
+    const ended = applyEventFrame(
+      started,
+      buildFrame({
+        id: 61,
+        type: "tool_execution_end",
+        payload: {
+          toolCallId: "call_1",
+          toolName: "hot_refresh",
+          result: { details: { collected: 12 }, content: [] },
+          isError: false,
+          durationMs: 2100,
+          summary: "收录 12 条热点",
+        },
+      }),
+    );
+    expect(ended.timeline).toHaveLength(1);
+    expect(ended.timeline[0]).toMatchObject({
+      tool: {
+        status: "succeeded",
+        summary: "收录 12 条热点",
+        durationMs: 2100,
+        result: { collected: 12 },
+        // 补丁里没带的字段必须原样保留（「缺省=不动」）：
+        params: { limit: 50 },
+        stepIndex: null,
+      },
+    });
+    // 不可变性：上一版状态的卡片原封不动（copy-on-write 是身份归并的前提）
+    expect(started.timeline[0]).toMatchObject({ tool: { status: "running", summary: "" } });
+    expect(ended.timeline[0]).not.toBe(started.timeline[0]);
+  });
+```
+
+**(c) 补一条「必写字段」用例**：end 补丁对 `summary` / `durationMs` / `result` 是**必写**（与其它字段的「缺省=不动」相反：非字符串摘要归一成空串、缺失耗时归一成 null）—— 这是有意的不对称，需要一条用例记录意图。追加：
+
+```ts
+  it("end 帧的摘要/耗时/结果是必写字段：非法摘要归一成空串、缺失耗时归一成 null", () => {
+    const started = applyEventFrame(
+      buildToolCardState(),
+      buildFrame({
+        id: 60,
+        type: "tool_execution_start",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", args: {} },
+      }),
+    );
+    const ended = applyEventFrame(
+      started,
+      buildFrame({
+        id: 61,
+        type: "tool_execution_end",
+        payload: { toolCallId: "call_1", toolName: "hot_refresh", result: {}, isError: false, summary: 123 },
+      }),
+    );
+    expect(ended.timeline[0]).toMatchObject({
+      tool: { status: "succeeded", summary: "", durationMs: null, result: null },
+    });
+  });
+```
+
+**(d) 在 `applyEventFrame` 的 end 分支记一处已知差异**（帧里没有 `status` / `error_type`，护栏阻断在直播期间会先显示为「失败」，重同步换成 DTO 后才是「被阻断」）。在 `status: frame.payload.isError === true ? "failed" : "succeeded",` 这一行**上方**加注释：
+
+```ts
+    // 帧里没有 status / error_type（服务端只在 agent_tool_calls 里落，SSE 出口只补 summary）：
+    // 被护栏阻断的调用在直播期间会先显示为「失败」（摘要仍含「已阻断」字样），
+    // 首屏 / 重同步换成 DTO 后才是「被阻断」+ 错误类型。同类差异：失败调用的展开详情
+    // （错误文本）也只有 DTO 里有 —— 两处都由重同步收敛，登记在交接文档。
+```
+
+**(e) 在文件头补一句话**（旧帧按到达顺序追加在末尾，不插回 `created_at` 位置）：接在「【快照可能错过 agent_end —— 由页面的兜底校正收敛】」段之后：
+
+```
+ * 【旧帧按到达顺序追加】id ≤ 水位的旧帧若内容不在快照里仍会被归并，但它追加在时间线**末尾**
+ * 而不是插回 created_at 位置 —— 实际只影响「重连后补到的边角旧帧」，它们本就贴近时间线末端。
+```
+
 - [ ] **Step 1: 更新测试文件的 import，并追加失败测试（`agent-state.test.ts` 末尾）**
 
 先把顶部 import 列表改成（新增 `applyArtifacts`、`parseSseBuffer`）：
@@ -1594,12 +1685,12 @@ export function runStatusFromRuns(runs: AgentRunItem[]): AgentRunStatusView {
 npx vitest run src/lib/agent/agent-state.test.ts
 ```
 
-Expected: PASS（约 36 个用例）。
+Expected: PASS（约 39 个用例：Task 2 收尾后的 28 + Step 0(c) 的 1 + 本任务新增的 10）。
 
 - [ ] **Step 5: 全量单测 + 类型检查**
 
 ```bash
-npx vitest run          # 期望 25 文件全绿（新增 1 个测试文件）
+npx vitest run          # 期望 25 文件全绿
 npx tsc --noEmit        # 期望无输出
 ```
 
@@ -1701,6 +1792,8 @@ git commit -m "feat(agent-ui): Agent 接口封装（列表/新建/首屏/发消�
 - Create: `src/components/agent/use-agent-events.ts`
 
 **定位**：连接、解析、按 `nextPollInterval` 降速重连。**不用 EventSource**（带不了 Authorization 头）。
+
+> 渲染开销说明（Task 2 质量审查的提醒）：每个帧都会让 `applyEventFrame` 返回新状态对象（噪声帧也一样），所以「一帧一次 dispatch」在理论上是一帧一次渲染 —— React 18+ 的自动批处理会把**同一个 read 块内**同步循环里的 dispatch 合并成一次渲染（一次运行的 1400 帧来自几百个块，重连后单块最多 200 帧），实测工作量可接受；`lastEventId` 走 ref（不进渲染路径）也是为此。**不要**为了「优化」把帧攒起来延迟处理 —— 那会破坏实时性。
 
 - [ ] **Step 1: 实现**
 
@@ -3090,6 +3183,7 @@ P0/P1-A 回归（**改了前端不改服务端也要跑**，防止构建产物/�
    - 「被阻断」靠夹具验收（Task 11）
    - 快照与 `agent_end` 的毫秒级竞态窗口：已由 Task 10 的 `settleRunStatus` 收敛（执行中每 5s 校正一次执行状态）；把成因与窗口登记在这里备查
    - 契约镜像：`src/types/index.ts` 与 `src/app/api/agent/shared.ts` 之间加了类型级断言（Task 2 的 `Mirror` 检查），服务端契约漂移会让 `tsc` 失败而不是运行时才发现
+   - 直播期间的工具卡与首屏 DTO 有两处细微差异（都由重同步/刷新收敛，不是缺陷）：① SSE 帧不带 `status` / `error_type`，护栏阻断在直播里先显示为「失败」（摘要仍含「已阻断」字样）；② 失败调用的展开详情（错误文本）只有 DTO 里有 —— 若将来 `publish` 级技能落地，考虑让 SSE 出口连 `status`/`error_type` 一起补
    - **C 块的决策点**：引入 `publish` 级技能让「阻断」生产可见？`content_rewrite` 无撤销的护栏确认
 6. 本地提交数与推送提示（`git log origin/main..HEAD --oneline | wc -l`；**push 由用户自己做**）
 
