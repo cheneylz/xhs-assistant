@@ -43,8 +43,8 @@ npx tsc --noEmit        # 期望无输出
 | Task 9 artifact-panel + artifact-card | ✅ 已验收 | `15f90f3`（跟进项并入 Task 10） |
 | Task 10 /agent 页面 + 侧边栏入口 | ✅ 已验收 | `9811360`（含 Task 9 审查跟进） |
 | Task 10 补丁（质量审查修复） | ✅ 已验收 | `7973542` |
-| Task 11 工具卡验收夹具（blocked / failed） | 🔶 实现完成，待补丁复审 | `ac2ec36` |
-| Task 11 补丁（质量审查修复） | ⬜ 未开始 | |
+| Task 11 工具卡验收夹具（blocked / failed） | ✅ 已验收 | `ac2ec36` |
+| Task 11 补丁（质量审查修复） | ✅ 已验收 | `18b5ef7` |
 | Task 12 浏览器端到端验收 + 全量回归 + 交接文档 | ⬜ 未开始 | |
 
 **当前基线**：25 文件 / 290 用例全绿，`tsc --noEmit` 无输出。
