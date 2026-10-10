@@ -30,20 +30,22 @@ export function ArtifactCard({ artifact }: { artifact: AgentArtifactItem }) {
       size="small"
       hoverable={clickable}
       onClick={clickable ? () => router.push(artifact.href) : undefined}
-      style={{ marginBottom: 8, cursor: clickable ? "pointer" : "default" }}
+      style={{ marginBottom: 8 }}
       styles={{ body: { padding: 10 } }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <Tag color={view.color} style={{ marginRight: 0 }}>
           {view.label}
         </Tag>
-        <Text ellipsis style={{ flex: 1, fontSize: 13, minWidth: 0 }}>
+        <Text ellipsis title={artifact.title} style={{ flex: 1, fontSize: 13, minWidth: 0 }}>
           {artifact.title || `#${artifact.id}`}
         </Text>
       </div>
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        {artifact.created_at.length >= 16 ? artifact.created_at.slice(11, 16) : ""}
-      </Text>
+      {artifact.created_at.length >= 16 && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {artifact.created_at.slice(11, 16)}
+        </Text>
+      )}
     </Card>
   );
 }

@@ -53,6 +53,8 @@ const { Sider, Header, Content } = Layout;
 const { Title, Text } = Typography;
 
 const mainNavItems: MenuProps["items"] = [
+  // Agent 是跨模块总入口，不埋在 xhs 平台下（P0 D6 / P1 设计稿 §5.1）
+  { key: "/agent", icon: <RobotOutlined />, label: "Agent 工作台" },
   { key: "/platforms/xhs/dashboard", icon: <DashboardOutlined />, label: "总览" },
   { key: "/platforms/xhs/planner", icon: <BulbOutlined />, label: "策划工作台" },
   { key: "/platforms/xhs/accounts", icon: <SafetyCertificateOutlined />, label: "账号矩阵" },
