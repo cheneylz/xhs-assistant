@@ -78,14 +78,18 @@ export const TOOL_SCHEMAS: Record<string, TSchema> = {
 
   "library_search_notes": Type.Object({
     keyword: Type.Optional(Type.String({ description: "关键词，匹配标题/正文/作者/笔记 ID" })),
-    tag_id: Type.Optional(Type.Integer({ minimum: 1, description: "按标签 ID 过滤" })),
+    tag_id: Type.Optional(Type.Integer({ minimum: 1, maximum: 2147483647, description: "按标签 ID 过滤" })),
     limit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: 20, default: 10, description: "返回条数，默认 10，最多 20" }),
     ),
   }),
 
   "library_note_detail": Type.Object({
-    note_id: Type.Integer({ minimum: 1, description: "笔记 ID（内容库主键，不是小红书 note_id），必填" }),
+    note_id: Type.Integer({
+      minimum: 1,
+      maximum: 2147483647,
+      description: "笔记 ID（内容库主键，不是小红书 note_id），必填",
+    }),
     comment_limit: Type.Optional(
       Type.Integer({ minimum: 1, maximum: 200, default: 20, description: "最多返回多少条评论，默认 20" }),
     ),

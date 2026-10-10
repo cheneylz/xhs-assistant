@@ -552,8 +552,6 @@ const INTERIM_UNIMPLEMENTED_SKILLS = new Set([
   "content_tags",
   "analytics_reports",
   "kb_get",
-  "library_search_notes",
-  "library_note_detail",
 ]);
 
 /** 执行单个技能（映射到现有服务函数） */
@@ -652,12 +650,16 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
     case "library_search_notes": {
       const keyword = typeof params.keyword === "string" ? params.keyword.trim() : "";
       const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
-      const tagId = params.tag_id === undefined ? undefined : Number(params.tag_id);
-      if (tagId !== undefined && !Number.isFinite(tagId)) throw new Error("tag_id 必须是数字");
-      const result = await searchNotes(userId, { keyword: keyword || undefined, tagId });
-      if (result.outcome === "tag_not_found") throw new Error(`标签 ${tagId} 不存在或不属于当前用户`);
+      // null 视同未传（Number(null) 是 0，会把「没传」误当成「查 id=0」）
+      const rawTagId = params.tag_id === undefined || params.tag_id === null ? undefined : Number(params.tag_id);
+      if (rawTagId !== undefined && (!Number.isInteger(rawTagId) || rawTagId < 1)) {
+        throw new Error("tag_id 必须是正整数");
+      }
+      // limit 下推到服务层：先切片再序列化，避免为 10 条结果序列化整个内容库
+      const result = await searchNotes(userId, { keyword: keyword || undefined, tagId: rawTagId, limit });
+      if (result.outcome === "tag_not_found") throw new Error(`标签 ${rawTagId} 不存在或不属于当前用户`);
       // 只回模型需要的字段：完整序列化里的 raw_json 体积大且对模型无用
-      const items = result.items.slice(0, limit).map((item) => ({
+      const items = result.items.map((item) => ({
         id: item.id,
         title: item.title,
         author_name: item.author_name,
@@ -666,10 +668,16 @@ export async function executeSkill(skillKey: string, params: Record<string, unkn
         content_excerpt: String(item.content ?? "").slice(0, 120),
       }));
       if (items.length === 0) {
-        // 空结果的 reason 必须带出来（工具卡默认只显示摘要一行，见 handoff §二.6）
-        return { total: 0, count: 0, items, reason: keyword ? `没有匹配「${keyword}」的笔记` : "内容库还没有笔记" };
+        // 空结果的 reason 必须带出来（工具卡默认只显示摘要一行，见 handoff §二.6）；
+        // 三种「0 条」的原因必须分开，否则会给出错误结论（质量审查 Issue 1）
+        const reason = keyword
+          ? `没有匹配「${keyword}」的笔记`
+          : rawTagId !== undefined
+            ? `标签 ${rawTagId} 下还没有笔记`
+            : "内容库还没有笔记";
+        return { total: 0, count: 0, items, reason };
       }
-      return { total: result.items.length, count: items.length, items };
+      return { total: result.total, count: items.length, items };
     }
     case "library_note_detail": {
       const noteId = Number(params.note_id);

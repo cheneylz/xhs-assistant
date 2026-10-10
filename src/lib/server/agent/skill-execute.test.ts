@@ -69,9 +69,10 @@ beforeEach(() => {
 });
 
 describe("library_search_notes", () => {
-  it("正常检索：total/count/items 投影，正文截断到 120 字", async () => {
+  it("正常检索：total/count/items 投影，正文截断到 120 字，limit 下推给服务层", async () => {
     mocks.searchNotes.mockResolvedValue({
       outcome: "ok",
+      total: 1,
       items: [
         {
           id: 12,
@@ -85,7 +86,8 @@ describe("library_search_notes", () => {
       ],
     });
     const result = await executeSkill("library_search_notes", { keyword: "露营" }, makeContext());
-    expect(mocks.searchNotes).toHaveBeenCalledWith(7, { keyword: "露营", tagId: undefined });
+    // limit 下推到服务层（默认 10）：服务端只序列化前 10 条
+    expect(mocks.searchNotes).toHaveBeenCalledWith(7, { keyword: "露营", tagId: undefined, limit: 10 });
     expect(result.total).toBe(1);
     expect(result.count).toBe(1);
     const items = result.items as Array<Record<string, unknown>>;
@@ -96,33 +98,39 @@ describe("library_search_notes", () => {
     expect(items[0].raw_json).toBeUndefined();
   });
 
-  it("空结果把 reason 放进 details（关键词检索 vs 内容库为空）", async () => {
-    mocks.searchNotes.mockResolvedValue({ outcome: "ok", items: [] });
-    const byKeyword = await executeSkill("library_search_notes", { keyword: "露营" }, makeContext());
-    expect(byKeyword.total).toBe(0);
-    expect(byKeyword.reason).toBe("没有匹配「露营」的笔记");
-    const noKeyword = await executeSkill("library_search_notes", {}, makeContext());
-    expect(noKeyword.reason).toBe("内容库还没有笔记");
+  it("空结果把 reason 放进 details，三种「0 条」的原因必须分开", async () => {
+    mocks.searchNotes.mockResolvedValue({ outcome: "ok", total: 0, items: [] });
+    expect((await executeSkill("library_search_notes", { keyword: "露营" }, makeContext())).reason).toBe(
+      "没有匹配「露营」的笔记",
+    );
+    expect((await executeSkill("library_search_notes", {}, makeContext())).reason).toBe("内容库还没有笔记");
+    // 只按标签检索时，不能误报「内容库还没有笔记」（质量审查 Issue 1）
+    expect((await executeSkill("library_search_notes", { tag_id: 3 }, makeContext())).reason).toBe(
+      "标签 3 下还没有笔记",
+    );
   });
 
-  it("limit 被钳制在 1..20（模型可能给离谱值）", async () => {
-    mocks.searchNotes.mockResolvedValue({ outcome: "ok", items: [] });
-    await executeSkill("library_search_notes", { limit: 999 }, makeContext());
-    // items 为空时不影响；用带数据的场景断言 slice 行为
+  it("limit 被钳制在 1..20 后下推给服务层", async () => {
     mocks.searchNotes.mockResolvedValue({
       outcome: "ok",
-      items: Array.from({ length: 30 }, (_, index) => ({ id: index + 1, title: `T${index}` })),
+      total: 30,
+      items: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, title: `T${index}` })),
     });
     const result = await executeSkill("library_search_notes", { limit: 999 }, makeContext());
+    expect(mocks.searchNotes).toHaveBeenCalledWith(7, { keyword: undefined, tagId: undefined, limit: 20 });
     expect(result.total).toBe(30);
     expect((result.items as unknown[]).length).toBe(20);
   });
 
-  it("tag_id 指向不存在的标签时抛可读错误", async () => {
+  it("tag_id 指向不存在的标签时抛可读错误，非正整数的 tag_id 在触达服务前就被拦下", async () => {
     mocks.searchNotes.mockResolvedValue({ outcome: "tag_not_found" });
     await expect(executeSkill("library_search_notes", { tag_id: 99 }, makeContext())).rejects.toThrow(
       "标签 99 不存在或不属于当前用户",
     );
+    await expect(executeSkill("library_search_notes", { tag_id: 1.5 }, makeContext())).rejects.toThrow(
+      "tag_id 必须是正整数",
+    );
+    expect(mocks.searchNotes).toHaveBeenCalledTimes(1);
   });
 });
 

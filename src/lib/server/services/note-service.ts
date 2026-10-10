@@ -107,17 +107,19 @@ export interface NoteSearchFilter {
   tagId?: number;
   hasAssets?: boolean;
   hasComments?: boolean;
+  /** 只序列化前 N 条（Agent 工具这类「只要前几条」的调用方用）；不传 = 全量（路由侧现状） */
+  limit?: number;
 }
 
 /** 列表查询结果：tag_not_found 交给调用方映射状态码（服务层不 import http-error） */
 export type NoteSearchResult =
-  | { outcome: "ok"; items: Array<Record<string, unknown>> }
+  | { outcome: "ok"; total: number; items: Array<Record<string, unknown>> }
   | { outcome: "tag_not_found" };
 
 /**
  * 按条件检索笔记（对应原版 get_notes 的过滤链）。
- * 分页由调用方做：路由用 paginated()，工具用 slice —— 因此这里返回全部命中项。
- * 前置条件：filter.tagId 须为调用方已校验的整数（校验留在路由层，见 D-C0-d）。
+ * 分页由调用方做：路由用 paginated()，工具传 limit —— 默认返回全部命中项。
+ * total 是**截断前**的命中总数，供调用方展示「命中 N 条、返回 M 条」。
  */
 export async function searchNotes(userId: number, filter: NoteSearchFilter): Promise<NoteSearchResult> {
   const keyword = filter.keyword?.trim() ?? "";
@@ -160,9 +162,12 @@ export async function searchNotes(userId: number, filter: NoteSearchFilter): Pro
     filtered = filtered.filter((note) => (filter.hasComments ? noteIds.has(note.id) : !noteIds.has(note.id)));
   }
 
+  // 先切片再序列化：serializeNoteWithTags 每篇 2 次查询，库大时全量序列化是主要成本（审查 R3）
+  const total = filtered.length;
+  const selected = filter.limit === undefined ? filtered : filtered.slice(0, Math.max(0, filter.limit));
   const items: Array<Record<string, unknown>> = [];
-  for (const note of filtered) items.push(await serializeNoteWithTags(note));
-  return { outcome: "ok", items };
+  for (const note of selected) items.push(await serializeNoteWithTags(note));
+  return { outcome: "ok", total, items };
 }
 
 /** 笔记详情（含标签）；不存在或不属于当前用户返回 null */
